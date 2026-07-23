@@ -20,6 +20,12 @@ const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(107, 114, 128);
 const GREEN: egui::Color32 = egui::Color32::from_rgb(34, 197, 94);
 const YELLOW: egui::Color32 = egui::Color32::from_rgb(234, 179, 8);
 
+// Shared grid spacing tiers so every page lines up the same way.
+// GRID_SPACING: content cards (hero/rune/pet cards, stat cards).
+// COMPACT_GRID_SPACING: small icon-like slots (inventory items, equipped gear).
+const GRID_SPACING: f32 = 12.0;
+const COMPACT_GRID_SPACING: f32 = 8.0;
+
 #[derive(Clone, PartialEq)]
 enum SortBy {
     Name,
@@ -408,6 +414,75 @@ impl TbMonitorApp {
             });
     }
 
+    /// Responsive grid where each column stretches to fill the row.
+    /// Used for content cards (heroes, runes, pets, stats): the same
+    /// column-count formula and centering logic runs on every page, so
+    /// grids never end up lopsided or using a different breakpoint scheme.
+    ///
+    /// `min_card_w` is the smallest a card is allowed to shrink to;
+    /// `max_cols` caps how many columns can appear even on very wide windows;
+    /// `height_fn` lets rows size themselves to their tallest card (pass
+    /// `|_| default_h` for uniform-height grids).
+    fn grid_stretch<T>(
+        ui: &mut egui::Ui,
+        items: &[T],
+        spacing: f32,
+        min_card_w: f32,
+        max_cols: usize,
+        default_h: f32,
+        height_fn: impl Fn(&T) -> f32,
+        mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
+    ) {
+        let avail_w = ui.available_width();
+        let cols = (((avail_w + spacing) / (min_card_w + spacing)).floor() as usize)
+            .clamp(1, max_cols.max(1));
+        let card_w = ((avail_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
+        let row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
+        let side_margin = ((avail_w - row_w) / 2.0).max(0.0);
+
+        for chunk in items.chunks(cols) {
+            let row_h = chunk.iter().map(|it| height_fn(it)).fold(default_h, f32::max);
+            ui.horizontal(|ui| {
+                ui.add_space(side_margin);
+                ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
+                for item in chunk {
+                    render_item(ui, item, card_w, row_h);
+                }
+            });
+            ui.add_space(spacing);
+        }
+    }
+
+    /// Responsive grid where each card keeps a fixed size (icon/slot-like
+    /// content) and extra row width is distributed as centered margins,
+    /// instead of stretching cards awkwardly wide.
+    fn grid_fixed<T>(
+        ui: &mut egui::Ui,
+        items: &[T],
+        spacing: f32,
+        card_w: f32,
+        card_h: f32,
+        max_cols: usize,
+        mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
+    ) {
+        let avail_w = ui.available_width();
+        let cols = (((avail_w + spacing) / (card_w + spacing)).floor() as usize)
+            .clamp(1, max_cols.max(1));
+        let row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
+        let side_margin = ((avail_w - row_w) / 2.0).max(0.0);
+
+        for chunk in items.chunks(cols) {
+            ui.horizontal(|ui| {
+                ui.add_space(side_margin);
+                ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
+                for item in chunk {
+                    render_item(ui, item, card_w, card_h);
+                }
+            });
+            ui.add_space(spacing);
+        }
+    }
+
     fn stat_card(ui: &mut egui::Ui, width: f32, title: &str, value_text: egui::RichText) {
         ui.allocate_ui_with_layout(
             egui::vec2(width, 70.0),
@@ -537,81 +612,86 @@ impl TbMonitorApp {
         ui.label(egui::RichText::new("OVERVIEW").color(TEXT_SECONDARY).size(14.0).strong());
         ui.add_space(10.0);
         
-        let spacing = 12.0;
-        let avail_w = ui.available_width();
-        let stat_card_w = ((avail_w - (spacing * 3.0)) / 4.0).max(120.0);
-        
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(spacing, 0.0);
-            Self::stat_card(ui, stat_card_w, "GOLD", egui::RichText::new(&Self::fmt_num(gold)).color(YELLOW).size(24.0).strong());
-            Self::stat_card(ui, stat_card_w, "HEROES", egui::RichText::new(&format!("{}", hero_count)).color(ACCENT).size(24.0).strong());
-            Self::stat_card(ui, stat_card_w, "ITEMS", egui::RichText::new(&format!("{}", item_count)).color(GREEN).size(24.0).strong());
-            Self::stat_card(ui, stat_card_w, "RUNES", egui::RichText::new(&format!("{}/{}", rune_count, rune_total)).color(egui::Color32::from_rgb(168,85,247)).size(24.0).strong());
-        });
-        
+        let spacing = GRID_SPACING;
+        let stats: [(&str, String, egui::Color32); 4] = [
+            ("GOLD", Self::fmt_num(gold), YELLOW),
+            ("HEROES", format!("{}", hero_count), ACCENT),
+            ("ITEMS", format!("{}", item_count), GREEN),
+            ("RUNES", format!("{}/{}", rune_count, rune_total), egui::Color32::from_rgb(168, 85, 247)),
+        ];
+        Self::grid_stretch(
+            ui,
+            &stats,
+            spacing,
+            150.0,
+            4,
+            70.0,
+            |_| 70.0,
+            |ui, (title, value, color), card_w, _row_h| {
+                Self::stat_card(ui, card_w, title, egui::RichText::new(value).color(*color).size(24.0).strong());
+            },
+        );
+
         ui.add_space(20.0);
         ui.label(egui::RichText::new("HEROES SUMMARY").color(TEXT_SECONDARY).size(14.0).strong());
         ui.add_space(10.0);
-        
+
         if let Some(heroes) = player.other.get("heroSaveDatas").and_then(|h| h.as_array()) {
-            let hero_cols = 3;
-            let full_row_w = avail_w;
-            let hero_card_w = ((full_row_w - (spacing * (hero_cols as f32 - 1.0))) / hero_cols as f32).max(180.0);
-            let actual_row_w = (hero_cols as f32 * hero_card_w) + ((hero_cols as f32 - 1.0) * spacing);
-            let side_margin = ((avail_w - actual_row_w) / 2.0).max(0.0);
-            
-            for chunk in heroes.chunks(hero_cols) {
-                ui.horizontal(|ui| {
-                    ui.add_space(side_margin);
-                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                    for hero in chunk {
-                        let key = hero.get("heroKey").and_then(|k| k.as_i64()).unwrap_or(0);
-                        let level = hero.get("HeroLevel").and_then(|l| l.as_i64()).unwrap_or(0);
-                        let exp = hero.get("HeroExp").and_then(|e| e.as_f64()).unwrap_or(0.0) as i64;
-                        let unlocked = hero.get("IsUnLock").and_then(|u| u.as_bool()).unwrap_or(false);
-                        
-                        let response = ui.allocate_ui_with_layout(
-                            egui::vec2(hero_card_w, 80.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                egui::Frame::NONE
-                                    .fill(CARD_BG)
-                                    .corner_radius(10.0)
-                                    .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
-                                    .inner_margin(egui::Margin::same(12))
-                                    .show(ui, |ui| {
-                                        ui.set_width(hero_card_w - 24.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new(Self::hero_name(key)).color(TEXT_PRIMARY).size(14.0).strong());
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                if unlocked {
-                                                    ui.label(egui::RichText::new("UNLOCKED").color(GREEN).size(9.0).strong());
-                                                } else {
-                                                    ui.label(egui::RichText::new("LOCKED").color(TEXT_MUTED).size(9.0));
-                                                }
-                                            });
+            let heroes: Vec<&serde_json::Value> = heroes.iter().collect();
+            Self::grid_stretch(
+                ui,
+                &heroes,
+                spacing,
+                200.0,
+                4,
+                80.0,
+                |_| 80.0,
+                |ui, hero, hero_card_w, hero_card_h| {
+                    let key = hero.get("heroKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                    let level = hero.get("HeroLevel").and_then(|l| l.as_i64()).unwrap_or(0);
+                    let exp = hero.get("HeroExp").and_then(|e| e.as_f64()).unwrap_or(0.0) as i64;
+                    let unlocked = hero.get("IsUnLock").and_then(|u| u.as_bool()).unwrap_or(false);
+
+                    let response = ui.allocate_ui_with_layout(
+                        egui::vec2(hero_card_w, hero_card_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::Frame::NONE
+                                .fill(CARD_BG)
+                                .corner_radius(10.0)
+                                .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
+                                .inner_margin(egui::Margin::same(12))
+                                .show(ui, |ui| {
+                                    ui.set_width(hero_card_w - 24.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(Self::hero_name(key)).color(TEXT_PRIMARY).size(14.0).strong());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if unlocked {
+                                                ui.label(egui::RichText::new("UNLOCKED").color(GREEN).size(9.0).strong());
+                                            } else {
+                                                ui.label(egui::RichText::new("LOCKED").color(TEXT_MUTED).size(9.0));
+                                            }
                                         });
-                                        ui.add_space(4.0);
-                                        ui.label(egui::RichText::new(format!("Lv.{}", level)).color(ACCENT).size(20.0).strong());
-                                        ui.label(egui::RichText::new(format!("EXP: {}", Self::fmt_num(exp))).color(TEXT_SECONDARY).size(10.0));
                                     });
-                            },
-                        );
-                        
-                        response.response.on_hover_ui(|ui| {
-                            ui.set_min_width(200.0);
-                            ui.label(egui::RichText::new(Self::hero_name(key)).color(TEXT_PRIMARY).size(14.0).strong());
-                            ui.add_space(4.0);
-                            ui.label(egui::RichText::new(format!("Level: {}", level)).color(TEXT_SECONDARY).size(12.0));
-                            ui.label(egui::RichText::new(format!("EXP: {}", Self::fmt_num(exp))).color(TEXT_SECONDARY).size(12.0));
-                            let ability_points = hero.get("AbilityPoint").and_then(|a| a.as_i64()).unwrap_or(0);
-                            let allocated = hero.get("AllocatedHeroAbilityPoint").and_then(|a| a.as_i64()).unwrap_or(0);
-                            ui.label(egui::RichText::new(format!("Skill Points: {} (Allocated: {})", ability_points, allocated)).color(TEXT_SECONDARY).size(12.0));
-                        });
-                    }
-                });
-                ui.add_space(spacing);
-            }
+                                    ui.add_space(4.0);
+                                    ui.label(egui::RichText::new(format!("Lv.{}", level)).color(ACCENT).size(20.0).strong());
+                                    ui.label(egui::RichText::new(format!("EXP: {}", Self::fmt_num(exp))).color(TEXT_SECONDARY).size(10.0));
+                                });
+                        },
+                    );
+
+                    response.response.on_hover_ui(|ui| {
+                        ui.set_min_width(200.0);
+                        ui.label(egui::RichText::new(Self::hero_name(key)).color(TEXT_PRIMARY).size(14.0).strong());
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(format!("Level: {}", level)).color(TEXT_SECONDARY).size(12.0));
+                        ui.label(egui::RichText::new(format!("EXP: {}", Self::fmt_num(exp))).color(TEXT_SECONDARY).size(12.0));
+                        let ability_points = hero.get("AbilityPoint").and_then(|a| a.as_i64()).unwrap_or(0);
+                        let allocated = hero.get("AllocatedHeroAbilityPoint").and_then(|a| a.as_i64()).unwrap_or(0);
+                        ui.label(egui::RichText::new(format!("Skill Points: {} (Allocated: {})", ability_points, allocated)).color(TEXT_SECONDARY).size(12.0));
+                    });
+                },
+            );
         }
     }
     
@@ -632,10 +712,7 @@ impl TbMonitorApp {
         static SLOT_NAMES: [&str; 10] = ["Main Hand", "Off Hand", "Head", "Body", "Hands", "Feet", "Neck", "Left Ear", "Right Ear", "Finger"];
 
         if let Some(heroes) = player.other.get("heroSaveDatas").and_then(|h| h.as_array()) {
-            let spacing = 12.0;
-            let avail_w = ui.available_width();
-            let cols = if avail_w > 700.0 { 2 } else { 1 };
-            let card_w = ((avail_w - (spacing * (cols as f32 - 1.0))) / cols as f32).max(280.0);
+            let spacing = GRID_SPACING;
 
             // Pre-compute data for each hero with height
             struct HeroCard<'a> {
@@ -666,15 +743,15 @@ impl TbMonitorApp {
                 HeroCard { value: hero, key, level, exp, unlocked, ability_points, allocated, equipped_ids, has_gear, height }
             }).collect();
 
-            let actual_row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
-            let side_margin = ((avail_w - actual_row_w) / 2.0).max(0.0);
-
-            for chunk in hero_cards.chunks(cols) {
-                let row_height = chunk.iter().map(|c| c.height).fold(0.0_f32, |a, b| a.max(b));
-                ui.horizontal(|ui| {
-                    ui.add_space(side_margin);
-                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                    for hc in chunk {
+            Self::grid_stretch(
+                ui,
+                &hero_cards,
+                spacing,
+                340.0,
+                2,
+                60.0,
+                |hc| hc.height,
+                |ui, hc, card_w, row_height| {
                         let _response = ui.allocate_ui_with_layout(
                             egui::vec2(card_w, row_height),
                             egui::Layout::top_down(egui::Align::Min),
@@ -758,13 +835,6 @@ impl TbMonitorApp {
                                                 let e_card_w = 52.0;
                                                 let e_margin = 3.0;
                                                 let e_outer = e_card_w + e_margin * 2.0;
-                                                let e_spacing = 3.0;
-                                                let e_slot = e_outer + e_spacing;
-                                                let e_avail = card_w - 24.0;
-                                                let e_cols = ((e_avail + e_spacing) / e_slot).floor() as usize;
-                                                let e_cols = e_cols.max(1).min(5);
-                                                let e_full_row = (e_cols as f32 * e_outer) + ((e_cols as f32 - 1.0) * e_spacing);
-                                                let e_side = ((e_avail - e_full_row) / 2.0).max(0.0);
 
                                                 let display_items: Vec<(usize, &serde_json::Value)> = hc.equipped_ids.iter().enumerate()
                                                     .filter(|(_, uid)| **uid != 0)
@@ -772,11 +842,14 @@ impl TbMonitorApp {
                                                     .collect();
 
                                                 if !display_items.is_empty() {
-                                                    for chunk in display_items.chunks(e_cols) {
-                                                        ui.horizontal(|ui| {
-                                                            ui.add_space(e_side);
-                                                            ui.spacing_mut().item_spacing = egui::vec2(e_spacing, e_spacing);
-                                                            for (slot_idx, item) in chunk {
+                                                    Self::grid_fixed(
+                                                        ui,
+                                                        &display_items,
+                                                        COMPACT_GRID_SPACING,
+                                                        e_outer,
+                                                        46.0,
+                                                        5,
+                                                        |ui, (slot_idx, item), _slot_w, _slot_h| {
                                                                 let item_key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                                                                 let grade = Self::item_grade(item_key).max(1).min(10);
                                                                 let bg = Self::item_grade_bg(grade);
@@ -845,20 +918,17 @@ impl TbMonitorApp {
                                                                             ui.label(egui::RichText::new(format!("  • {}", stat)).color(GREEN).size(10.0));
                                                                         }
                                                                     }
-                                                                });
-                                                            }
-                                                        });
-                                                    }
+                                                });
+                                                        },
+                                                    );
                                                 }
                                             }
                                         }
                                     });
                             },
                         );
-                    }
-                });
-                ui.add_space(spacing);
-            }
+                },
+            );
         }
     }
     
@@ -974,22 +1044,16 @@ impl TbMonitorApp {
             let card_content_w = 100.0;
             let margin = 8.0;
             let card_outer_w = card_content_w + (margin * 2.0); // 116.0
-            let spacing = 8.0;
-            let slot_w = card_outer_w + spacing; // 124.0
-            
-            let total_avail_w = ui.available_width();
-            let columns = ((total_avail_w + spacing) / slot_w).floor() as usize;
-            let columns = columns.max(1);
-            
-            // Calculate total width of a full row and determine symmetric left/right margin
-            let full_row_w = (columns as f32 * card_outer_w) + ((columns as f32 - 1.0) * spacing);
-            let side_margin = ((total_avail_w - full_row_w) / 2.0).max(0.0);
-            
-            for chunk in sorted.chunks(columns) {
-                ui.horizontal(|ui| {
-                    ui.add_space(side_margin);
-                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                    for item in chunk {
+            let spacing = COMPACT_GRID_SPACING;
+
+            Self::grid_fixed(
+                ui,
+                &sorted,
+                spacing,
+                card_outer_w,
+                72.0,
+                usize::MAX,
+                |ui, item, _card_w, _card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let is_chaotic = item.get("IsChaotic").and_then(|c| c.as_bool()).unwrap_or(false);
                         let enchants = item.get("EnchantCount").and_then(|c| c.as_i64()).unwrap_or(0);
@@ -1067,10 +1131,8 @@ impl TbMonitorApp {
                                 }
                             });
                         });
-                    }
-                });
-                ui.add_space(spacing);
-            }
+                },
+            );
         }
     }
     
@@ -1095,25 +1157,23 @@ impl TbMonitorApp {
             ui.label(egui::RichText::new("RUNE NODES").color(TEXT_SECONDARY).size(14.0).strong());
             ui.add_space(10.0);
 
-            let spacing = 10.0;
-            let avail_w = ui.available_width();
-            let cols = if avail_w > 900.0 { 6 } else if avail_w > 600.0 { 4 } else if avail_w > 400.0 { 3 } else { 2 };
-            let card_w = ((avail_w - (spacing * (cols as f32 - 1.0))) / cols as f32).max(100.0);
+            let spacing = GRID_SPACING;
 
-            let actual_row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
-            let side_margin = ((avail_w - actual_row_w) / 2.0).max(0.0);
-
-            for chunk in runes.chunks(cols) {
-                ui.horizontal(|ui| {
-                    ui.add_space(side_margin);
-                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                    for rune in chunk {
+            Self::grid_stretch(
+                ui,
+                runes,
+                spacing,
+                110.0,
+                6,
+                65.0,
+                |_| 65.0,
+                |ui, rune, card_w, card_h| {
                         let key = rune.get("RuneKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let level = rune.get("Level").and_then(|l| l.as_i64()).unwrap_or(0);
                         let is_unlocked = level > 0;
 
                         let resp = ui.allocate_ui_with_layout(
-                            egui::vec2(card_w, 65.0),
+                            egui::vec2(card_w, card_h),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 let is_rune_hovered = ui.rect_contains_pointer(ui.max_rect());
@@ -1149,10 +1209,8 @@ impl TbMonitorApp {
                             ui.label(egui::RichText::new(format!("Level: {}", level)).color(if is_unlocked { egui::Color32::from_rgb(168, 85, 247) } else { TEXT_MUTED }).size(11.0));
                             ui.label(egui::RichText::new(format!("Status: {}", if is_unlocked { "Active" } else { "Locked" })).color(if is_unlocked { GREEN } else { TEXT_MUTED }).size(11.0));
                         });
-                    }
-                });
-                ui.add_space(spacing);
-            }
+                },
+            );
         }
 
         ui.add_space(20.0);
@@ -1160,19 +1218,17 @@ impl TbMonitorApp {
         ui.add_space(10.0);
 
         if let Some(pets) = player.other.get("PetSaveData").and_then(|p| p.as_array()) {
-            let spacing = 12.0;
-            let avail_w = ui.available_width();
-            let cols = if avail_w > 800.0 { 4 } else if avail_w > 500.0 { 2 } else { 1 };
-            let card_w = ((avail_w - (spacing * (cols as f32 - 1.0))) / cols as f32).max(160.0);
+            let spacing = GRID_SPACING;
 
-            let actual_row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
-            let side_margin = ((avail_w - actual_row_w) / 2.0).max(0.0);
-
-            for chunk in pets.chunks(cols) {
-                ui.horizontal(|ui| {
-                    ui.add_space(side_margin);
-                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                    for pet in chunk {
+            Self::grid_stretch(
+                ui,
+                pets,
+                spacing,
+                180.0,
+                4,
+                75.0,
+                |_| 75.0,
+                |ui, pet, card_w, card_h| {
                         let key = pet.get("PetKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let unlocked = pet.get("IsUnlock").or_else(|| pet.get("IsUnLock")).and_then(|u| u.as_bool()).unwrap_or(false);
                         let equipped = pet.get("IsEquipped").or_else(|| pet.get("IsViewed")).and_then(|e| e.as_bool()).unwrap_or(false);
@@ -1180,7 +1236,7 @@ impl TbMonitorApp {
                         let (pet_name, pet_buff) = Self::pet_info(key);
 
                         let resp = ui.allocate_ui_with_layout(
-                            egui::vec2(card_w, 75.0),
+                            egui::vec2(card_w, card_h),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 let is_pet_hovered = ui.rect_contains_pointer(ui.max_rect());
@@ -1223,10 +1279,8 @@ impl TbMonitorApp {
                             ui.label(egui::RichText::new("Passive Buffs:").color(TEXT_MUTED).size(10.0));
                             ui.label(egui::RichText::new(format!("  • {}", pet_buff)).color(GREEN).size(11.0));
                         });
-                    }
-                });
-                ui.add_space(spacing);
-            }
+                },
+            );
         }
     }
 }
