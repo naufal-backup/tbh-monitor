@@ -897,19 +897,28 @@ impl TbMonitorApp {
     /// full available width — no leftover margin on either side, so no
     /// dead space before a scrollbar. Best for icon-grid content
     /// (inventory items, chests) where uniform square tiles look best.
+    ///
+    /// `max_card_w` caps how large a card can stretch to — without it, a
+    /// wide window with few columns would stretch cards (and therefore
+    /// their forced-equal height) far past what the content needs, leaving
+    /// a dead vertical gap under the content in every row.
     fn grid_square<T>(
         ui: &mut egui::Ui,
         items: &[T],
         spacing: f32,
         min_card_w: f32,
+        max_card_w: f32,
         max_cols: usize,
         mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
     ) {
         if items.is_empty() { return; }
         use taffy::prelude::*;
         let avail_w = ui.available_width();
-        let cols = (((avail_w + spacing) / (min_card_w + spacing)).floor() as usize)
-            .clamp(1, max_cols.max(1));
+        // Smallest column count that keeps cards from exceeding max_card_w...
+        let cols_for_max_w = (((avail_w + spacing) / (max_card_w + spacing)).ceil() as usize).max(1);
+        // ...but never more columns than would shrink cards below min_card_w.
+        let cols_for_min_w = (((avail_w + spacing) / (min_card_w + spacing)).floor() as usize).max(1);
+        let cols = cols_for_max_w.min(cols_for_min_w).clamp(1, max_cols.max(1));
         let card_w = ((avail_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
         let card_h = card_w;
 
@@ -1255,7 +1264,7 @@ impl eframe::App for TbMonitorApp {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add_space(16.0);
                         egui::Frame::NONE
-                            .inner_margin(egui::Margin::same(0))
+                            .inner_margin(egui::Margin::symmetric(16, 0))
                             .show(ui, |ui| {
                                 match self.active_tab {
                                     Tab::Dashboard => self.render_dashboard(ui, &player),
@@ -1697,6 +1706,7 @@ impl TbMonitorApp {
                     &chests,
                     chest_spacing,
                     c_outer,
+                    c_outer + 40.0,
                     usize::MAX,
                     |ui, item, card_w, card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
@@ -1806,6 +1816,7 @@ impl TbMonitorApp {
                 &sorted,
                 spacing,
                 card_w,
+                card_w + 32.0,
                 usize::MAX,
                 |ui, item, card_w, card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
