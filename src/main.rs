@@ -790,6 +790,7 @@ impl TbMonitorApp {
         let total_grid_h = container_layout.size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
+            let base = ui.max_rect().min;
             for (idx, &child) in child_nodes.iter().enumerate() {
                 let layout = taffy.layout(child).unwrap();
                 let x = layout.location.x;
@@ -798,7 +799,7 @@ impl TbMonitorApp {
                 let h = layout.size.height;
 
                 let rect = egui::Rect::from_min_size(
-                    ui.min_rect().min + egui::vec2(x, y),
+                    base + egui::vec2(x, y),
                     egui::vec2(w, h),
                 );
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -874,7 +875,7 @@ impl TbMonitorApp {
         let total_grid_h = container_layout.size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
-            let base = ui.min_rect().min;
+            let base = ui.max_rect().min;
             for (idx, &child) in child_nodes.iter().enumerate() {
                 let layout = taffy.layout(child).unwrap();
                 let x = layout.location.x;
@@ -961,7 +962,7 @@ impl TbMonitorApp {
         let total_grid_h = container_layout.size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
-            let base = ui.min_rect().min;
+            let base = ui.max_rect().min;
             for (idx, &child) in child_nodes.iter().enumerate() {
                 let layout = taffy.layout(child).unwrap();
                 let x = layout.location.x;
@@ -1071,7 +1072,7 @@ impl TbMonitorApp {
         let total_h = taffy.layout(container).unwrap().size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_h), |ui| {
-            let base = ui.min_rect().min;
+            let base = ui.max_rect().min;
             // Render each column
             for (col_idx, col) in col_items.iter().enumerate() {
                 let col_layout = taffy.layout(col_nodes[col_idx]).unwrap();
@@ -1084,7 +1085,7 @@ impl TbMonitorApp {
                         egui::vec2(card_w, col_layout.size.height),
                     )),
                     |ui| {
-                        let col_base = ui.min_rect().min;
+                        let col_base = ui.max_rect().min;
                         for &(item_idx, h) in col {
                             let child_layout = taffy.layout(taffy.children(col_nodes[col_idx]).unwrap()[col.iter().position(|&(i, _)| i == item_idx).unwrap()]).unwrap();
                             let child_y = child_layout.location.y;
@@ -1415,7 +1416,9 @@ impl TbMonitorApp {
                 height: f32,
             }
 
-            let hero_cards: Vec<HeroCard> = heroes.iter().map(|hero| {
+            let hero_cards: Vec<HeroCard> = heroes.iter().filter(|hero| {
+                !hero.is_null() && hero.get("heroKey").and_then(|k| k.as_i64()).unwrap_or(0) != 0
+            }).map(|hero| {
                 let key = hero.get("heroKey").and_then(|k| k.as_i64()).unwrap_or(0);
                 let level = hero.get("HeroLevel").and_then(|l| l.as_i64()).unwrap_or(0);
                 let exp = hero.get("HeroExp").and_then(|e| e.as_f64()).unwrap_or(0.0);
@@ -1718,15 +1721,23 @@ impl TbMonitorApp {
         ui.add_space(12.0);
         
         if let Some(items) = player.other.get("itemSaveDatas").and_then(|i| i.as_array()) {
-            // Separate chests from regular items
+            // Separate chests from regular items (skip null/invalid entries and quantity 0)
             let chests: Vec<_> = items.iter().filter(|item| {
+                if item.is_null() { return false; }
                 let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                if key == 0 { return false; }
+                let qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(1);
+                if qty <= 0 { return false; }
                 let cat = key / 10000;
                 cat == 91 || cat == 92
             }).collect();
             
             let regular: Vec<_> = items.iter().filter(|item| {
+                if item.is_null() { return false; }
                 let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                if key == 0 { return false; }
+                let qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(1);
+                if qty <= 0 { return false; }
                 let cat = key / 10000;
                 cat != 91 && cat != 92
             }).collect();
