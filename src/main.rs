@@ -739,7 +739,8 @@ impl TbMonitorApp {
         let pad = spacing;
         let content_w = (avail_w - pad * 2.0).max(0.0);
         let cols = (((content_w + spacing) / (min_card_w + spacing)).floor() as usize)
-            .clamp(1, max_cols.max(1));
+            .clamp(1, max_cols.max(1))
+            .min(items.len().max(1));
         let card_w = ((content_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
 
         let mut taffy = TaffyTree::<()>::new();
@@ -829,7 +830,8 @@ impl TbMonitorApp {
         let avail_w = ui.available_width();
         let content_w = (avail_w - grid_pad * 2.0).max(0.0);
         let cols = (((content_w + spacing) / (card_w + spacing)).floor() as usize)
-            .clamp(1, max_cols.max(1));
+            .clamp(1, max_cols.max(1))
+            .min(items.len().max(1));
 
         let mut taffy = TaffyTree::<()>::new();
         let mut child_nodes = Vec::new();
@@ -922,8 +924,9 @@ impl TbMonitorApp {
         let cols_for_max_w = (((avail_w + spacing) / (max_card_w + spacing)).ceil() as usize).max(1);
         // ...but never more columns than would shrink cards below min_card_w.
         let cols_for_min_w = (((avail_w + spacing) / (min_card_w + spacing)).floor() as usize).max(1);
-        let cols = cols_for_max_w.min(cols_for_min_w).clamp(1, max_cols.max(1));
-        let card_w = ((avail_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
+        let cols_by_width = cols_for_max_w.min(cols_for_min_w).clamp(1, max_cols.max(1));
+        let cols = cols_by_width.min(items.len().max(1));
+        let card_w = ((avail_w - spacing * (cols as f32 - 1.0)) / cols as f32).clamp(min_card_w, max_card_w);
         let card_h = card_w;
 
         let mut taffy = TaffyTree::<()>::new();
@@ -1006,7 +1009,8 @@ impl TbMonitorApp {
         let pad = spacing;
         let content_w = (avail_w - pad * 2.0).max(0.0);
         let cols = (((content_w + spacing) / (min_card_w + spacing)).floor() as usize)
-            .clamp(1, max_cols.max(1));
+            .clamp(1, max_cols.max(1))
+            .min(items.len().max(1));
         let card_w = ((content_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
 
         // Distribute items to columns (shortest column first)
