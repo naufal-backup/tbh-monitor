@@ -892,6 +892,83 @@ impl TbMonitorApp {
         });
     }
 
+    /// Like `grid_stretch`, but forces every card to be a perfect square
+    /// (height == width) and stretches columns so the row always fills the
+    /// full available width — no leftover margin on either side, so no
+    /// dead space before a scrollbar. Best for icon-grid content
+    /// (inventory items, chests) where uniform square tiles look best.
+    fn grid_square<T>(
+        ui: &mut egui::Ui,
+        items: &[T],
+        spacing: f32,
+        min_card_w: f32,
+        max_cols: usize,
+        mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
+    ) {
+        if items.is_empty() { return; }
+        use taffy::prelude::*;
+        let avail_w = ui.available_width();
+        let cols = (((avail_w + spacing) / (min_card_w + spacing)).floor() as usize)
+            .clamp(1, max_cols.max(1));
+        let card_w = ((avail_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
+        let card_h = card_w;
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut child_nodes = Vec::new();
+        for _item in items {
+            let child_style = Style {
+                size: Size {
+                    width: Dimension::Length(card_w),
+                    height: Dimension::Length(card_h),
+                },
+                ..Default::default()
+            };
+            child_nodes.push(taffy.new_leaf(child_style).unwrap());
+        }
+
+        let container_style = Style {
+            display: Display::Grid,
+            grid_template_columns: (0..cols)
+                .map(|_| TrackSizingFunction::from_length(card_w))
+                .collect(),
+            gap: Size {
+                width: LengthPercentage::Length(spacing),
+                height: LengthPercentage::Length(spacing),
+            },
+            ..Default::default()
+        };
+
+        let container = taffy.new_with_children(container_style, &child_nodes).unwrap();
+        taffy.compute_layout(
+            container,
+            Size {
+                width: AvailableSpace::Definite(avail_w),
+                height: AvailableSpace::MaxContent,
+            },
+        ).unwrap();
+
+        let container_layout = taffy.layout(container).unwrap();
+        let total_grid_h = container_layout.size.height;
+
+        ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
+            for (idx, &child) in child_nodes.iter().enumerate() {
+                let layout = taffy.layout(child).unwrap();
+                let x = layout.location.x;
+                let y = layout.location.y;
+                let w = layout.size.width;
+                let h = layout.size.height;
+
+                let rect = egui::Rect::from_min_size(
+                    ui.min_rect().min + egui::vec2(x, y),
+                    egui::vec2(w, h),
+                );
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    render_item(ui, &items[idx], w, h);
+                });
+            }
+        });
+    }
+
     fn grid_masonry<T>(
         ui: &mut egui::Ui,
         items: &[T],
@@ -1615,15 +1692,13 @@ impl TbMonitorApp {
                 let c_card_w = 100.0;
                 let c_margin = 6.0;
                 let c_outer = c_card_w + c_margin * 2.0;
-                Self::grid_fixed(
+                Self::grid_square(
                     ui,
                     &chests,
                     chest_spacing,
                     c_outer,
-                    52.0,
                     usize::MAX,
-                    4.0,
-                    |ui, item, _card_w, _card_h| {
+                    |ui, item, card_w, card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let name = self.get_item_name(key);
                         let cat = key / 10000;
@@ -1632,7 +1707,7 @@ impl TbMonitorApp {
                         let border_color = if is_boss { BOSS_BLUE } else { TEXT_MUTED };
                         let bg = if is_boss { BOSS_BG } else { CARD_BG };
                         let resp = ui.allocate_ui_with_layout(
-                            egui::vec2(c_outer, 52.0),
+                            egui::vec2(card_w, card_h),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
                                 let card_bg = if ui.rect_contains_pointer(ui.max_rect()) {
@@ -1644,7 +1719,7 @@ impl TbMonitorApp {
                                     .stroke(egui::Stroke::new(1.5_f32, border_color))
                                     .inner_margin(egui::Margin::same(c_margin as i8))
                                     .show(ui, |ui| {
-                                        ui.set_width(c_card_w);
+                                        ui.set_width(card_w - c_margin * 2.0);
                                         ui.vertical_centered(|ui| {
                                             ui.label(egui::RichText::new(chest_label).color(if is_boss { BOSS_BLUE } else { TEXT_SECONDARY }).size(9.0));
                                             ui.add_space(1.0);
@@ -1724,17 +1799,15 @@ impl TbMonitorApp {
             ui.add_space(4.0);
             
             let card_w = 100.0;
-            let spacing = 4.0;
+            let spacing = COMPACT_GRID_SPACING;
 
-            Self::grid_fixed(
+            Self::grid_square(
                 ui,
                 &sorted,
                 spacing,
                 card_w,
-                card_w,
                 usize::MAX,
-                0.0,
-                |ui, item, _card_w, _card_h| {
+                |ui, item, card_w, card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let is_chaotic = item.get("IsChaotic").and_then(|c| c.as_bool()).unwrap_or(false);
                         let enchants = item.get("EnchantCount")
@@ -1751,7 +1824,7 @@ impl TbMonitorApp {
                         let icon_texture = self.get_icon_texture(key);
                         
                         let response = ui.allocate_ui_with_layout(
-                            egui::vec2(card_w, card_w),
+                            egui::vec2(card_w, card_h),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
                                 let is_item_hovered = ui.rect_contains_pointer(ui.max_rect());
@@ -1769,7 +1842,8 @@ impl TbMonitorApp {
                                     .show(ui, |ui| {
                                         ui.vertical_centered(|ui| {
                                             if let Some(tex) = icon_texture {
-                                                ui.add(egui::widgets::Image::from_texture(tex).max_width(80.0).max_height(80.0));
+                                                let icon_dim = (card_w * 0.8).min(card_h * 0.8);
+                                                ui.add(egui::widgets::Image::from_texture(tex).max_width(icon_dim).max_height(icon_dim));
                                             }
                                             ui.add(egui::Label::new(egui::RichText::new(&short_name).color(TEXT_PRIMARY).size(8.0).strong()));
                                             ui.label(egui::RichText::new(grade_name).color(border_color).size(7.0));
