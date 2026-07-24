@@ -1422,7 +1422,7 @@ impl TbMonitorApp {
                     .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
                     .unwrap_or_default();
                 let has_gear = unlocked && equipped_ids.iter().any(|&id| id != 0);
-                let height = if unlocked { if has_gear { 270.0 } else { 110.0 } } else { 60.0 };
+                let height = if unlocked { if has_gear { 300.0 } else { 110.0 } } else { 60.0 };
                 HeroCard { value: hero, key, level, exp, unlocked, ability_points, allocated, equipped_ids, has_gear, height }
             }).collect();
 
@@ -1523,10 +1523,10 @@ impl TbMonitorApp {
                                                 });
                                                 ui.add_space(2.0);
 
-                                                let e_card_w = 52.0;
+                                                let e_card_w = 66.0;
                                                 let e_margin = 3.0;
                                                 let e_outer = e_card_w + e_margin * 2.0;
-                                                let e_card_h = 56.0;
+                                                let e_card_h = 72.0;
 
                                                 let display_items: Vec<(usize, &serde_json::Value)> = hc.equipped_ids.iter().enumerate()
                                                     .filter(|(_, uid)| **uid != 0)
@@ -1553,7 +1553,7 @@ impl TbMonitorApp {
                                                                 let enchants = item.get("EnchantCount").and_then(|e| e.as_array())
                                                                     .map(|a| a.iter().filter_map(|v| v.as_i64()).sum::<i64>()).unwrap_or(0);
                                                                 let icon_texture = self.get_icon_texture(item_key);
-                                                                let icon_s = 20.0;
+                                                                let icon_s = 30.0;
 
                                                                 let resp = ui.allocate_ui_with_layout(
                                                                     egui::vec2(e_outer, e_card_h),
@@ -1574,15 +1574,15 @@ impl TbMonitorApp {
                                                                             .show(ui, |ui| {
                                                                                 ui.set_width(e_card_w);
                                                                                 ui.vertical_centered(|ui| {
-                                                                                    ui.add(egui::Label::new(egui::RichText::new(SLOT_NAMES[*slot_idx]).color(TEXT_MUTED).size(7.0)));
+                                                                                    ui.add(egui::Label::new(egui::RichText::new(SLOT_NAMES[*slot_idx]).color(TEXT_MUTED).size(8.0)));
                                                                                     if let Some(tex) = icon_texture {
                                                                                         ui.add(egui::widgets::Image::new(tex).max_width(icon_s).max_height(icon_s));
                                                                                     }
-                                                                                    ui.label(egui::RichText::new(grade_name).color(border_color).size(6.0));
+                                                                                    ui.label(egui::RichText::new(grade_name).color(border_color).size(7.0));
                                                                                     if chaotic {
-                                                                                        ui.label(egui::RichText::new("C").color(YELLOW).size(6.0).strong());
+                                                                                        ui.label(egui::RichText::new("C").color(YELLOW).size(7.0).strong());
                                                                                     } else if enchants > 0 {
-                                                                                        ui.label(egui::RichText::new(format!("+{}", enchants)).color(ACCENT).size(6.0));
+                                                                                        ui.label(egui::RichText::new(format!("+{}", enchants)).color(ACCENT).size(7.0));
                                                                                     }
                                                                                 });
                                                                             });
@@ -1595,24 +1595,64 @@ impl TbMonitorApp {
                                                                 let grade_name = Self::grade_name(grade);
                                                                 let tip_type = Self::item_type(item_key);
                                                                 let item_ref = item;
+                                                                let tip_uid = item.get("UniqueId").and_then(|u| u.as_i64()).unwrap_or(0);
+                                                                let tip_level = item.get("Level").and_then(|l| l.as_i64())
+                                                                    .or_else(|| item.get("ItemLevel").and_then(|l| l.as_i64()))
+                                                                    .unwrap_or(0);
+                                                                let tip_qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(1);
+                                                                let tip_insc = item.get("InscriptionAppliedTotalCount").and_then(|i| i.as_i64()).unwrap_or(0);
+                                                                let tip_engr = item.get("EngravingAppliedTotalCount").and_then(|e| e.as_i64()).unwrap_or(0);
+                                                                let tip_deco = item.get("DecorationAppliedTotalCount").and_then(|d| d.as_i64()).unwrap_or(0);
                                                                 resp.on_hover_ui(move |ui| {
-                                                                    ui.set_min_width(200.0);
+                                                                    ui.set_min_width(220.0);
                                                                     ui.label(egui::RichText::new(tip_slot).color(TEXT_MUTED).size(10.0));
                                                                     ui.label(egui::RichText::new(&tip_name).color(tip_border).size(14.0).strong());
                                                                     ui.label(egui::RichText::new(format!("Grade: {}", grade_name)).color(tip_border).size(11.0));
                                                                     ui.label(egui::RichText::new(format!("Type: {}", tip_type)).color(TEXT_SECONDARY).size(11.0));
+                                                                    if tip_level > 0 {
+                                                                        ui.label(egui::RichText::new(format!("Level: {}", tip_level)).color(TEXT_SECONDARY).size(11.0));
+                                                                    }
+                                                                    ui.label(egui::RichText::new(format!("UID: {}", tip_uid)).color(TEXT_MUTED).size(10.0));
+                                                                    if tip_qty > 1 {
+                                                                        ui.label(egui::RichText::new(format!("Quantity: {}", tip_qty)).color(YELLOW).size(11.0).strong());
+                                                                    }
                                                                     if chaotic {
+                                                                        ui.add_space(2.0);
                                                                         ui.label(egui::RichText::new("CHAOTIC").color(YELLOW).size(10.0).strong());
                                                                     }
                                                                     if enchants > 0 {
-                                                                        ui.label(egui::RichText::new(format!("Enchants: {}", enchants)).color(ACCENT).size(10.0));
+                                                                        ui.label(egui::RichText::new(format!("Enchants: +{}", enchants)).color(ACCENT).size(10.0));
                                                                     }
                                                                     let stats = Self::format_item_stats(item_ref);
                                                                     if !stats.is_empty() {
                                                                         ui.add_space(4.0);
+                                                                        ui.separator();
+                                                                        ui.add_space(4.0);
                                                                         ui.label(egui::RichText::new("Stats & Buffs:").color(TEXT_MUTED).size(10.0));
                                                                         for stat in stats {
                                                                             ui.label(egui::RichText::new(format!("  • {}", stat)).color(GREEN).size(10.0));
+                                                                        }
+                                                                    }
+                                                                    // Socket / Inscription / Engraving / Decoration
+                                                                    let socket_data = item_ref.get("SocketData").and_then(|s| s.as_array());
+                                                                    let socket_count = socket_data.map(|a| a.len()).unwrap_or(0);
+                                                                    let has_extra = tip_insc > 0 || tip_engr > 0 || tip_deco > 0 || socket_count > 0;
+                                                                    if has_extra {
+                                                                        ui.add_space(4.0);
+                                                                        ui.separator();
+                                                                        ui.add_space(2.0);
+                                                                        if socket_count > 0 {
+                                                                            let filled = socket_data.map(|a| a.iter().filter(|s| !s.is_null() && s.as_object().map_or(false, |o| !o.is_empty())).count()).unwrap_or(0);
+                                                                            ui.label(egui::RichText::new(format!("  Sockets: {}/{}", filled, socket_count)).color(TEXT_SECONDARY).size(10.0));
+                                                                        }
+                                                                        if tip_insc > 0 {
+                                                                            ui.label(egui::RichText::new(format!("  Inscriptions: {}", tip_insc)).color(TEXT_SECONDARY).size(10.0));
+                                                                        }
+                                                                        if tip_engr > 0 {
+                                                                            ui.label(egui::RichText::new(format!("  Engravings: {}", tip_engr)).color(TEXT_SECONDARY).size(10.0));
+                                                                        }
+                                                                        if tip_deco > 0 {
+                                                                            ui.label(egui::RichText::new(format!("  Decorations: {}", tip_deco)).color(TEXT_SECONDARY).size(10.0));
                                                                         }
                                                                     }
                                                 });
@@ -1698,7 +1738,7 @@ impl TbMonitorApp {
                 ui.label(egui::RichText::new(format!("Chests ({})", chests.len())).color(TEXT_MUTED).size(13.0).strong());
                 ui.add_space(6.0);
                 let chest_spacing = COMPACT_GRID_SPACING;
-                let c_card_w = 100.0;
+                let c_card_w = 130.0;
                 let c_margin = 6.0;
                 let c_outer = c_card_w + c_margin * 2.0;
                 Self::grid_square(
@@ -1745,6 +1785,10 @@ impl TbMonitorApp {
                             ui.label(egui::RichText::new(&name).color(border_color).size(14.0).strong());
                             ui.label(egui::RichText::new(format!("Type: {}", chest_label)).color(TEXT_SECONDARY).size(11.0));
                             ui.label(egui::RichText::new(format!("ID: {}", key)).color(TEXT_MUTED).size(10.0));
+                            let qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(1);
+                            if qty > 1 {
+                                ui.label(egui::RichText::new(format!("Quantity: {}", qty)).color(YELLOW).size(11.0).strong());
+                            }
                         });
                     },
                 );
@@ -1810,7 +1854,7 @@ impl TbMonitorApp {
             ui.label(egui::RichText::new(&format!("{} items", sorted.len())).color(TEXT_MUTED).size(11.0));
             ui.add_space(4.0);
             
-            let card_w = 100.0;
+            let card_w = 130.0;
             let spacing = COMPACT_GRID_SPACING;
 
             Self::grid_square(
@@ -1855,15 +1899,15 @@ impl TbMonitorApp {
                                     .fill(card_bg)
                                     .corner_radius(6.0)
                                     .stroke(card_stroke)
-                                    .inner_margin(egui::Margin::same(3))
+                                    .inner_margin(egui::Margin::same(2))
                                     .show(ui, |ui| {
-                                        ui.set_width(card_w - 6.0);
-                                        ui.set_min_height(card_h - 6.0);
+                                        ui.set_width(card_w - 4.0);
+                                        ui.set_min_height(card_h - 4.0);
                                         let full_rect = ui.available_rect_before_wrap();
                                         ui.allocate_rect(full_rect, egui::Sense::hover());
 
                                         if let Some(tex) = icon_texture {
-                                            let icon_dim = full_rect.width().min(full_rect.height()) * 0.8;
+                                            let icon_dim = full_rect.width().min(full_rect.height()) * 0.92;
                                             let icon_rect = egui::Rect::from_center_size(full_rect.center(), egui::vec2(icon_dim, icon_dim));
                                             ui.put(icon_rect, egui::widgets::Image::from_texture(tex));
                                         }
@@ -1898,17 +1942,20 @@ impl TbMonitorApp {
                         let tooltip_bg = bg;
                         let tooltip_icon = icon_texture;
                         let item_ref = item;
+                        let tooltip_uid = item.get("UniqueId").and_then(|u| u.as_i64()).unwrap_or(0);
+                        let tooltip_qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(1);
+                        let tooltip_level = level;
                         response.on_hover_ui(move |ui| {
-                            ui.set_max_width(260.0);
+                            ui.set_max_width(280.0);
                             ui.vertical(|ui| {
                                 // ---- Header: icon + name + rarity pill + level ----
                                 ui.horizontal(|ui| {
-                                    let icon_box = egui::vec2(52.0, 52.0);
+                                    let icon_box = egui::vec2(56.0, 56.0);
                                     let (icon_rect, _) = ui.allocate_exact_size(icon_box, egui::Sense::hover());
                                     ui.painter().rect_filled(icon_rect, 6.0, tooltip_bg);
                                     ui.painter().rect_stroke(icon_rect, 6.0, egui::Stroke::new(1.5_f32, tooltip_border), egui::StrokeKind::Outside);
                                     if let Some(tex) = tooltip_icon {
-                                        let inner = icon_rect.shrink(6.0);
+                                        let inner = icon_rect.shrink(5.0);
                                         ui.put(inner, egui::widgets::Image::from_texture(tex));
                                     }
 
@@ -1923,8 +1970,8 @@ impl TbMonitorApp {
                                                 .show(ui, |ui| {
                                                     ui.label(egui::RichText::new(grade_name).color(tooltip_border).size(10.0).strong());
                                                 });
-                                            if level > 0 {
-                                                ui.label(egui::RichText::new(format!("Lv.{}", level)).color(TEXT_SECONDARY).size(12.0));
+                                            if tooltip_level > 0 {
+                                                ui.label(egui::RichText::new(format!("Lv.{}", tooltip_level)).color(TEXT_SECONDARY).size(12.0));
                                             }
                                         });
                                     });
@@ -1934,15 +1981,37 @@ impl TbMonitorApp {
                                 ui.separator();
                                 ui.add_space(6.0);
 
-                                // ---- Type badge ----
-                                egui::Frame::NONE
-                                    .fill(CARD_BG)
-                                    .corner_radius(5.0)
-                                    .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
-                                    .inner_margin(egui::Margin::symmetric(8, 4))
-                                    .show(ui, |ui| {
-                                        ui.label(egui::RichText::new(tooltip_type).color(TEXT_SECONDARY).size(11.0));
-                                    });
+                                // ---- Meta info row: Type, UID, Qty ----
+                                ui.horizontal(|ui| {
+                                    egui::Frame::NONE
+                                        .fill(CARD_BG)
+                                        .corner_radius(5.0)
+                                        .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
+                                        .inner_margin(egui::Margin::symmetric(8, 4))
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new(tooltip_type).color(TEXT_SECONDARY).size(11.0));
+                                        });
+                                    ui.add_space(6.0);
+                                    egui::Frame::NONE
+                                        .fill(CARD_BG)
+                                        .corner_radius(5.0)
+                                        .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
+                                        .inner_margin(egui::Margin::symmetric(8, 4))
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new(format!("UID: {}", tooltip_uid)).color(TEXT_MUTED).size(10.0));
+                                        });
+                                    if tooltip_qty > 1 {
+                                        ui.add_space(6.0);
+                                        egui::Frame::NONE
+                                            .fill(CARD_BG)
+                                            .corner_radius(5.0)
+                                            .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
+                                            .inner_margin(egui::Margin::symmetric(8, 4))
+                                            .show(ui, |ui| {
+                                                ui.label(egui::RichText::new(format!("Qty: {}", tooltip_qty)).color(YELLOW).size(10.0).strong());
+                                            });
+                                    }
+                                });
                                 ui.add_space(8.0);
 
                                 // ---- Stats: split "Label: Value" into two-column rows ----
@@ -1972,6 +2041,52 @@ impl TbMonitorApp {
                                             ui.label(egui::RichText::new(format!("+{}", enchants)).color(TEXT_PRIMARY).size(12.0).strong());
                                         });
                                     });
+                                }
+
+                                // ---- Additional meta: Socket, Inscription, Engraving, Decoration ----
+                                let insc = item_ref.get("InscriptionAppliedTotalCount").and_then(|i| i.as_i64()).unwrap_or(0);
+                                let engr = item_ref.get("EngravingAppliedTotalCount").and_then(|e| e.as_i64()).unwrap_or(0);
+                                let deco = item_ref.get("DecorationAppliedTotalCount").and_then(|d| d.as_i64()).unwrap_or(0);
+                                let socket_data = item_ref.get("SocketData").and_then(|s| s.as_array());
+                                let socket_count = socket_data.map(|a| a.len()).unwrap_or(0);
+
+                                let has_extra = insc > 0 || engr > 0 || deco > 0 || socket_count > 0;
+                                if has_extra {
+                                    ui.add_space(4.0);
+                                    ui.separator();
+                                    ui.add_space(4.0);
+                                    if socket_count > 0 {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Sockets").color(TEXT_MUTED).size(11.0));
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(format!("{}/{} filled", socket_data.map(|a| a.iter().filter(|s| !s.is_null() && s.as_object().map_or(false, |o| !o.is_empty())).count()).unwrap_or(0), socket_count)).color(TEXT_PRIMARY).size(11.0));
+                                            });
+                                        });
+                                    }
+                                    if insc > 0 {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Inscriptions").color(TEXT_MUTED).size(11.0));
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(format!("{}", insc)).color(TEXT_PRIMARY).size(11.0));
+                                            });
+                                        });
+                                    }
+                                    if engr > 0 {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Engravings").color(TEXT_MUTED).size(11.0));
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(format!("{}", engr)).color(TEXT_PRIMARY).size(11.0));
+                                            });
+                                        });
+                                    }
+                                    if deco > 0 {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Decorations").color(TEXT_MUTED).size(11.0));
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(format!("{}", deco)).color(TEXT_PRIMARY).size(11.0));
+                                            });
+                                        });
+                                    }
                                 }
                             });
                         });
