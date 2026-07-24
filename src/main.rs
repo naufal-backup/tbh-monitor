@@ -1827,9 +1827,13 @@ impl TbMonitorApp {
                             .and_then(|c| c.as_array())
                             .map(|a| a.iter().filter_map(|v| v.as_i64()).sum::<i64>())
                             .unwrap_or(0);
-                        
+                        // Item level — save files in this game store it as either
+                        // "Level" or "ItemLevel" depending on category; try both.
+                        let level = item.get("Level").and_then(|l| l.as_i64())
+                            .or_else(|| item.get("ItemLevel").and_then(|l| l.as_i64()))
+                            .unwrap_or(0);
+
                         let name = self.get_item_name(key);
-                        let short_name: String = name.chars().take(14).collect();
                         let grade = Self::item_grade(key).max(0).min(9);
                         let bg = Self::item_grade_bg(grade);
                         let border_color = Self::grade_color(grade);
@@ -1849,24 +1853,41 @@ impl TbMonitorApp {
                                 };
                                 egui::Frame::NONE
                                     .fill(card_bg)
-                                    .corner_radius(4.0)
+                                    .corner_radius(6.0)
                                     .stroke(card_stroke)
-                                    .inner_margin(egui::Margin::same(2))
+                                    .inner_margin(egui::Margin::same(3))
                                     .show(ui, |ui| {
-                                        ui.set_width(card_w - 4.0);
-                                        ui.set_min_height(card_h - 4.0);
-                                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                            ui.add_space(((card_h - 4.0) * 0.06).max(0.0));
-                                            if let Some(tex) = icon_texture {
-                                                let icon_dim = (card_w * 0.8).min(card_h * 0.8);
-                                                ui.add(egui::widgets::Image::from_texture(tex).max_width(icon_dim).max_height(icon_dim));
-                                            }
-                                            ui.add(egui::Label::new(egui::RichText::new(&short_name).color(TEXT_PRIMARY).size(8.0).strong()));
-                                            ui.label(egui::RichText::new(grade_name).color(border_color).size(7.0));
-                                            if is_chaotic {
-                                                ui.label(egui::RichText::new("CHAOTIC").color(YELLOW).size(7.0).strong());
-                                            }
-                                        });
+                                        ui.set_width(card_w - 6.0);
+                                        ui.set_min_height(card_h - 6.0);
+                                        let full_rect = ui.available_rect_before_wrap();
+                                        ui.allocate_rect(full_rect, egui::Sense::hover());
+
+                                        if let Some(tex) = icon_texture {
+                                            let icon_dim = full_rect.width().min(full_rect.height()) * 0.8;
+                                            let icon_rect = egui::Rect::from_center_size(full_rect.center(), egui::vec2(icon_dim, icon_dim));
+                                            ui.put(icon_rect, egui::widgets::Image::from_texture(tex));
+                                        }
+
+                                        if is_chaotic {
+                                            ui.painter().circle_filled(full_rect.left_top() + egui::vec2(7.0, 7.0), 4.0, YELLOW);
+                                        }
+
+                                        if level > 0 {
+                                            let badge_w = 8.0 + (level.to_string().len() as f32) * 6.5;
+                                            let badge_h = 14.0;
+                                            let badge_rect = egui::Rect::from_min_size(
+                                                full_rect.max - egui::vec2(badge_w + 2.0, badge_h + 2.0),
+                                                egui::vec2(badge_w, badge_h),
+                                            );
+                                            ui.painter().rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_unmultiplied(8, 8, 12, 225));
+                                            ui.painter().text(
+                                                badge_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                level.to_string(),
+                                                egui::FontId::proportional(9.0),
+                                                egui::Color32::from_rgb(235, 235, 235),
+                                            );
+                                        }
                                     });
                             },
                         ).response;
@@ -1874,32 +1895,83 @@ impl TbMonitorApp {
                         let tooltip_name = name.clone();
                         let tooltip_type = Self::item_type(key);
                         let tooltip_border = border_color;
+                        let tooltip_bg = bg;
+                        let tooltip_icon = icon_texture;
                         let item_ref = item;
                         response.on_hover_ui(move |ui| {
-                            ui.set_min_width(220.0);
+                            ui.set_max_width(260.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(&tooltip_name).color(tooltip_border).size(14.0).strong());
-                                ui.label(egui::RichText::new(format!("Grade: {}", grade_name)).color(tooltip_border).size(11.0));
-                                ui.label(egui::RichText::new(format!("Type: {}", tooltip_type)).color(TEXT_SECONDARY).size(11.0));
-                                ui.label(egui::RichText::new(format!("ID: {}", key)).color(TEXT_MUTED).size(10.0));
-                                
-                                if is_chaotic {
-                                    ui.add_space(4.0);
-                                    ui.label(egui::RichText::new("CHAOTIC").color(YELLOW).size(11.0).strong());
-                                }
-                                
-                                if enchants > 0 {
-                                    ui.add_space(4.0);
-                                    ui.label(egui::RichText::new(format!("Enchants: {}", enchants)).color(ACCENT).size(11.0));
+                                // ---- Header: icon + name + rarity pill + level ----
+                                ui.horizontal(|ui| {
+                                    let icon_box = egui::vec2(52.0, 52.0);
+                                    let (icon_rect, _) = ui.allocate_exact_size(icon_box, egui::Sense::hover());
+                                    ui.painter().rect_filled(icon_rect, 6.0, tooltip_bg);
+                                    ui.painter().rect_stroke(icon_rect, 6.0, egui::Stroke::new(1.5_f32, tooltip_border), egui::StrokeKind::Outside);
+                                    if let Some(tex) = tooltip_icon {
+                                        let inner = icon_rect.shrink(6.0);
+                                        ui.put(inner, egui::widgets::Image::from_texture(tex));
+                                    }
+
+                                    ui.vertical(|ui| {
+                                        ui.label(egui::RichText::new(&tooltip_name).color(tooltip_border).size(15.0).strong());
+                                        ui.horizontal(|ui| {
+                                            egui::Frame::NONE
+                                                .fill(tooltip_bg)
+                                                .corner_radius(4.0)
+                                                .stroke(egui::Stroke::new(1.0_f32, tooltip_border))
+                                                .inner_margin(egui::Margin::symmetric(6, 1))
+                                                .show(ui, |ui| {
+                                                    ui.label(egui::RichText::new(grade_name).color(tooltip_border).size(10.0).strong());
+                                                });
+                                            if level > 0 {
+                                                ui.label(egui::RichText::new(format!("Lv.{}", level)).color(TEXT_SECONDARY).size(12.0));
+                                            }
+                                        });
+                                    });
+                                });
+
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(6.0);
+
+                                // ---- Type badge ----
+                                egui::Frame::NONE
+                                    .fill(CARD_BG)
+                                    .corner_radius(5.0)
+                                    .stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))
+                                    .inner_margin(egui::Margin::symmetric(8, 4))
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new(tooltip_type).color(TEXT_SECONDARY).size(11.0));
+                                    });
+                                ui.add_space(8.0);
+
+                                // ---- Stats: split "Label: Value" into two-column rows ----
+                                let stats = Self::format_item_stats(item_ref);
+                                for stat in &stats {
+                                    if let Some((label, value)) = stat.split_once(": ") {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(label).color(ACCENT).size(12.0));
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(value).color(TEXT_PRIMARY).size(12.0).strong());
+                                            });
+                                        });
+                                    } else {
+                                        ui.label(egui::RichText::new(stat).color(TEXT_SECONDARY).size(12.0));
+                                    }
                                 }
 
-                                let stats = Self::format_item_stats(item_ref);
-                                if !stats.is_empty() {
+                                if is_chaotic {
                                     ui.add_space(4.0);
-                                    ui.label(egui::RichText::new("Stats & Buffs:").color(TEXT_MUTED).size(10.0));
-                                    for stat in stats {
-                                        ui.label(egui::RichText::new(format!("  • {}", stat)).color(GREEN).size(10.0));
-                                    }
+                                    ui.label(egui::RichText::new("CHAOTIC").color(YELLOW).size(12.0).strong());
+                                }
+                                if enchants > 0 {
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("Enchant Level").color(ACCENT).size(12.0));
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(egui::RichText::new(format!("+{}", enchants)).color(TEXT_PRIMARY).size(12.0).strong());
+                                        });
+                                    });
                                 }
                             });
                         });
