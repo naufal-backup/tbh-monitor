@@ -503,7 +503,7 @@ impl TbMonitorApp {
             let pixels = rgba.into_raw();
             let color_img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
             let tex_name = format!("item_icon_{}", fname);
-            let tex = ctx.load_texture(&tex_name, color_img, egui::TextureOptions::LINEAR);
+            let tex = ctx.load_texture(&tex_name, color_img, egui::TextureOptions::NEAREST);
             self.icon_textures.insert(fname.to_string(), tex);
         }
     }
