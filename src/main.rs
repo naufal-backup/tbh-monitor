@@ -1730,7 +1730,9 @@ impl TbMonitorApp {
                                     .inner_margin(egui::Margin::same(c_margin as i8))
                                     .show(ui, |ui| {
                                         ui.set_width(card_w - c_margin * 2.0);
-                                        ui.vertical_centered(|ui| {
+                                        ui.set_min_height(card_h - c_margin * 2.0);
+                                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                            ui.add_space(((card_h - c_margin * 2.0) * 0.15).max(0.0));
                                             ui.label(egui::RichText::new(chest_label).color(if is_boss { BOSS_BLUE } else { TEXT_SECONDARY }).size(9.0));
                                             ui.add_space(1.0);
                                             ui.label(egui::RichText::new(&name).color(if is_boss { BOSS_BLUE } else { TEXT_PRIMARY }).size(10.0).strong());
@@ -1851,7 +1853,10 @@ impl TbMonitorApp {
                                     .stroke(card_stroke)
                                     .inner_margin(egui::Margin::same(2))
                                     .show(ui, |ui| {
-                                        ui.vertical_centered(|ui| {
+                                        ui.set_width(card_w - 4.0);
+                                        ui.set_min_height(card_h - 4.0);
+                                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                            ui.add_space(((card_h - 4.0) * 0.06).max(0.0));
                                             if let Some(tex) = icon_texture {
                                                 let icon_dim = (card_w * 0.8).min(card_h * 0.8);
                                                 ui.add(egui::widgets::Image::from_texture(tex).max_width(icon_dim).max_height(icon_dim));
