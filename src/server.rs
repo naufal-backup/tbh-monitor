@@ -28,7 +28,7 @@ pub async fn get_inventory(data: web::Data<AppState>) -> HttpResponse {
             if let Some(player) = json.get("PlayerSaveData") {
                 if let Some(value_str) = player.get("value").and_then(|v| v.as_str()) {
                     if let Ok(player_data) = serde_json::from_str::<Value>(value_str) {
-                        if let Some(items) = player_data.get("inventoryItems") {
+                        if let Some(items) = player_data.get("inventorySaveDatas") {
                             return HttpResponse::Ok().json(items);
                         }
                     }

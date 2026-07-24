@@ -19,6 +19,42 @@ const TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(156, 163, 175);
 const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(107, 114, 128);
 const GREEN: egui::Color32 = egui::Color32::from_rgb(34, 197, 94);
 const YELLOW: egui::Color32 = egui::Color32::from_rgb(234, 179, 8);
+const BOSS_BLUE: egui::Color32 = egui::Color32::from_rgb(47, 139, 252);
+const BOSS_BG: egui::Color32 = egui::Color32::from_rgb(12, 20, 45);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Config {
+    update_interval_secs: u64,
+    server_port: u16,
+    ngrok_url: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { update_interval_secs: 30, server_port: 8080, ngrok_url: String::new() }
+    }
+}
+
+impl Config {
+    fn path() -> std::path::PathBuf {
+        let mut p = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        p.push("tbh-monitor");
+        let _ = std::fs::create_dir_all(&p);
+        p.push("config.json");
+        p
+    }
+    fn load() -> Self {
+        let p = Self::path();
+        std::fs::read_to_string(&p).ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+    fn save(&self) {
+        if let Ok(s) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(Self::path(), s);
+        }
+    }
+}
 
 // Shared grid spacing tiers so every page lines up the same way.
 // GRID_SPACING: content cards (hero/rune/pet cards, stat cards).
@@ -53,6 +89,7 @@ struct TbMonitorApp {
     show_settings: bool,
     ngrok_url: String,
     qr_texture: Option<egui::TextureHandle>,
+    qr_counter: u64,
     server_running: bool,
     server_port: u16,
     server_handle: Option<thread::JoinHandle<()>>,
@@ -61,6 +98,12 @@ struct TbMonitorApp {
     sort_by: SortBy,
     filter_category: ItemCategoryFilter,
     search_query: String,
+    ngrok_process: Option<std::process::Child>,
+    ngrok_status: String,
+    icon_map: std::collections::HashMap<String, String>,
+    icon_textures: std::collections::HashMap<String, egui::TextureHandle>,
+    icon_download_thread: Option<thread::JoinHandle<Vec<(String, Vec<u8>)>>>,
+    icon_loaded: bool,
 }
 
 #[derive(PartialEq)]
@@ -82,6 +125,7 @@ impl Default for TbMonitorApp {
             show_settings: false,
             ngrok_url: String::new(),
             qr_texture: None,
+            qr_counter: 0,
             server_running: false,
             server_port: 8080,
             server_handle: None,
@@ -90,15 +134,28 @@ impl Default for TbMonitorApp {
             sort_by: SortBy::Name,
             filter_category: ItemCategoryFilter::All,
             search_query: String::new(),
+            ngrok_process: None,
+            ngrok_status: String::new(),
+            icon_map: std::collections::HashMap::new(),
+            icon_textures: std::collections::HashMap::new(),
+            icon_download_thread: None,
+            icon_loaded: false,
         }
     }
 }
 
 impl TbMonitorApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let mut app = Self::default();
+        let cfg = Config::load();
+        let mut app = Self {
+            update_interval: Duration::from_secs(cfg.update_interval_secs),
+            server_port: cfg.server_port,
+            ngrok_url: cfg.ngrok_url,
+            ..Self::default()
+        };
         app.load_item_names();
         app.load_save();
+        app.start_icon_download();
         app
     }
     
@@ -107,46 +164,39 @@ impl TbMonitorApp {
         if let Ok(names) = serde_json::from_str::<std::collections::HashMap<String, String>>(names_json) {
             self.item_names = names;
         }
+        let icon_json = include_str!("..\\data\\icon_map.json");
+        if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, String>>(icon_json) {
+            self.icon_map = map;
+        }
     }
     
     fn get_item_name(&self, key: i64) -> String {
         let key_str = key.to_string();
         
-        // 1. Try exact match first
+        // 1. Try exact match first (works for materials, grade-0 equipment)
         if let Some(name) = self.item_names.get(&key_str) {
             return name.clone();
         }
         
-        // 2. Equipment key matching
+        // 2. Equipment key: category(2) + grade(1) + item_sub_id(3)
+        //    base_key = category * 10000 + (item_sub_id / 10)
         let category = key / 10000;
         let raw_id = key % 1000;
-        let grade = Self::item_grade(key);
         
-        if category >= 30 {
-            let item_index = if raw_id > 0 { (raw_id - 1) % 20 + 1 } else { 1 };
+        if category >= 30 && category < 90 && raw_id >= 10 {
+            let item_index = raw_id / 10;
             let base_key = category * 10000 + item_index;
             if let Some(name) = self.item_names.get(&base_key.to_string()) {
                 return name.clone();
             }
-            
-            let base_key_direct = category * 10000 + (key % 100);
-            if let Some(name) = self.item_names.get(&base_key_direct.to_string()) {
-                return name.clone();
-            }
-
-            let base_key_mod = category * 10000 + (key % 1000);
-            if let Some(name) = self.item_names.get(&base_key_mod.to_string()) {
-                return name.clone();
-            }
-        } else {
-            let modelo = (key % 10000 / 10) % 100;
-            let base = (key / 10000) * 10000 + modelo;
-            if let Some(name) = self.item_names.get(&base.to_string()) {
-                return name.clone();
-            }
         }
         
-        // 3. Descriptive fallback (never show raw ID)
+        // 3. Stage boxes
+        if category == 91 { return "Normal Chest".to_string(); }
+        if category == 92 { return "Boss Chest".to_string(); }
+        
+        // 4. Descriptive fallback
+        let grade = Self::item_grade(key);
         let grade_str = Self::grade_name(grade);
         let type_str = Self::item_type(key);
         if !grade_str.is_empty() && type_str != "Item" {
@@ -154,16 +204,16 @@ impl TbMonitorApp {
         } else if type_str != "Item" {
             format!("{} (Grade {})", type_str, grade)
         } else {
-            format!("Equipment (T{})", grade)
+            format!("Item #{}", key)
         }
     }
     
     fn item_grade(key: i64) -> i64 {
         let s = key.to_string();
-        if s.len() == 6 && key >= 300000 {
+        if s.len() == 6 {
             s.chars().nth(2).unwrap_or('0').to_digit(10).unwrap_or(0) as i64
         } else {
-            1
+            0
         }
     }
     
@@ -174,46 +224,47 @@ impl TbMonitorApp {
             40=>"Shield", 41=>"Arrow", 42=>"Orb", 43=>"Tome", 44=>"Bolt", 45=>"Hatchet",
             50=>"Helmet", 51=>"Armor", 52=>"Gloves", 53=>"Boots",
             60=>"Amulet", 61=>"Earring", 62=>"Ring", 63=>"Bracer",
+            91=>"Stage Box", 92=>"Boss Box",
             _=>"Item",
         }
     }
     
     fn grade_name(grade: i64) -> &'static str {
         match grade {
-            1=>"Common", 2=>"Uncommon", 3=>"Rare", 4=>"Legendary", 5=>"Immortal",
-            6=>"Arcana", 7=>"Beyond", 8=>"Celestial", 9=>"Divine", 10=>"Cosmic",
+            0=>"Common", 1=>"Uncommon", 2=>"Rare", 3=>"Legendary", 4=>"Immortal",
+            5=>"Arcana", 6=>"Beyond", 7=>"Celestial", 8=>"Divine", 9=>"Cosmic",
             _=>"",
         }
     }
     
     fn grade_color(grade: i64) -> egui::Color32 {
         match grade {
-            1=>egui::Color32::from_rgb(228,228,228),  // Common: #e4e4e4
-            2=>egui::Color32::from_rgb(84,252,12),    // Uncommon: #54fc0c
-            3=>egui::Color32::from_rgb(47,139,252),   // Rare: #2f8bfc
-            4=>egui::Color32::from_rgb(252,156,12),   // Legendary: #fc9c0c
-            5=>egui::Color32::from_rgb(252,36,36),    // Immortal: #fc2424
-            6=>egui::Color32::from_rgb(180,12,252),   // Arcana: #b40cfc
-            7=>egui::Color32::from_rgb(252,36,108),   // Beyond: #fc246c
-            8=>egui::Color32::from_rgb(108,204,228),  // Celestial: #6ccce4
-            9=>egui::Color32::from_rgb(252,228,84),   // Divine: #fce454
-            10=>egui::Color32::from_rgb(252,252,252), // Cosmic: #fcfcfc
+            0=>egui::Color32::from_rgb(228,228,228),  // Common: #e4e4e4
+            1=>egui::Color32::from_rgb(84,252,12),    // Uncommon: #54fc0c
+            2=>egui::Color32::from_rgb(47,139,252),   // Rare: #2f8bfc
+            3=>egui::Color32::from_rgb(252,156,12),   // Legendary: #fc9c0c
+            4=>egui::Color32::from_rgb(252,36,36),    // Immortal: #fc2424
+            5=>egui::Color32::from_rgb(180,12,252),   // Arcana: #b40cfc
+            6=>egui::Color32::from_rgb(252,36,108),   // Beyond: #fc246c
+            7=>egui::Color32::from_rgb(108,204,228),  // Celestial: #6ccce4
+            8=>egui::Color32::from_rgb(252,228,84),   // Divine: #fce454
+            9=>egui::Color32::from_rgb(252,252,252),  // Cosmic: #fcfcfc
             _=>egui::Color32::GRAY,
         }
     }
     
     fn item_grade_bg(grade: i64) -> egui::Color32 {
         match grade {
-            1=>egui::Color32::from_rgb(30,30,32),   // Common: dark gray
-            2=>egui::Color32::from_rgb(15,35,15),   // Uncommon: dark green
-            3=>egui::Color32::from_rgb(12,20,45),   // Rare: dark blue
-            4=>egui::Color32::from_rgb(42,28,8),    // Legendary: dark orange
-            5=>egui::Color32::from_rgb(45,10,10),   // Immortal: dark red
-            6=>egui::Color32::from_rgb(32,10,48),   // Arcana: dark purple
-            7=>egui::Color32::from_rgb(48,10,22),   // Beyond: dark pink
-            8=>egui::Color32::from_rgb(15,35,42),   // Celestial: dark cyan
-            9=>egui::Color32::from_rgb(45,40,12),   // Divine: dark gold
-            10=>egui::Color32::from_rgb(42,42,48),  // Cosmic: dark white
+            0=>egui::Color32::from_rgb(30,30,32),   // Common: dark gray
+            1=>egui::Color32::from_rgb(15,35,15),   // Uncommon: dark green
+            2=>egui::Color32::from_rgb(12,20,45),   // Rare: dark blue
+            3=>egui::Color32::from_rgb(42,28,8),    // Legendary: dark orange
+            4=>egui::Color32::from_rgb(45,10,10),   // Immortal: dark red
+            5=>egui::Color32::from_rgb(32,10,48),   // Arcana: dark purple
+            6=>egui::Color32::from_rgb(48,10,22),   // Beyond: dark pink
+            7=>egui::Color32::from_rgb(15,35,42),   // Celestial: dark cyan
+            8=>egui::Color32::from_rgb(45,40,12),   // Divine: dark gold
+            9=>egui::Color32::from_rgb(42,42,48),  // Cosmic: dark white
             _=>CARD_BG,
         }
     }
@@ -242,7 +293,9 @@ impl TbMonitorApp {
             let pixels: Vec<u8> = img.pixels().map(|p| p[0]).collect();
             let size = img.width() as usize;
             let color_image = egui::ColorImage::from_gray([size, size], &pixels);
-            self.qr_texture = Some(ctx.load_texture("qr_code", color_image, egui::TextureOptions::NEAREST));
+            self.qr_counter += 1;
+            let tex_name = format!("qr_{}", self.qr_counter);
+            self.qr_texture = Some(ctx.load_texture(&tex_name, color_image, egui::TextureOptions::NEAREST));
         }
     }
     
@@ -261,6 +314,207 @@ impl TbMonitorApp {
         self.status = format!("Server running on port {}", port);
     }
     
+    fn ngrok_is_installed() -> bool {
+        std::process::Command::new("ngrok").arg("version").output().map_or(false, |o| o.status.success())
+    }
+    
+    fn fetch_ngrok_url() -> Option<String> {
+        // Use curl.exe to query ngrok's local API
+        let out = std::process::Command::new("curl.exe")
+            .args(["-s", "http://127.0.0.1:4040/api/tunnels"])
+            .output().ok()?;
+        if !out.status.success() { return None; }
+        let body = String::from_utf8_lossy(&out.stdout);
+        // Parse JSON to find https tunnel URL
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(tunnels) = val.get("tunnels").and_then(|t| t.as_array()) {
+                for t in tunnels {
+                    if let Some(url) = t.get("public_url").and_then(|u| u.as_str()) {
+                        if url.starts_with("https://") {
+                            return Some(url.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+    
+    fn start_ngrok(&mut self) {
+        if !Self::ngrok_is_installed() {
+            self.ngrok_status = "ngrok tidak terinstall — download dari https://ngrok.com/download".to_string();
+            return;
+        }
+        self.stop_ngrok();
+        let port = self.server_port.to_string();
+        match std::process::Command::new("ngrok")
+            .args(["http", &port, "--log=stdout"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => {
+                self.ngrok_process = Some(child);
+                self.ngrok_status = "ngrok running, menunggu URL...".to_string();
+            }
+            Err(e) => {
+                self.ngrok_status = format!("Gagal start ngrok: {}", e);
+            }
+        }
+    }
+    
+    fn stop_ngrok(&mut self) {
+        if let Some(mut child) = self.ngrok_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn base_key(key: i64) -> String {
+        let category = key / 10000;
+        let raw_id = key % 1000;
+        if category >= 11 && category < 90 && raw_id >= 10 {
+            let item_index = raw_id / 10;
+            (category * 10000 + item_index).to_string()
+        } else {
+            key.to_string()
+        }
+    }
+
+    fn get_icon_filename(&self, key: i64) -> Option<String> {
+        let bk = Self::base_key(key);
+        self.icon_map.get(&bk).cloned()
+    }
+
+    fn start_icon_download(&mut self) {
+        if self.icon_download_thread.is_some() { return; }
+        // Collect all unique icon filenames from current save
+        let needed = self.collect_needed_icons();
+        if needed.is_empty() { self.icon_loaded = true; return; }
+        let needed_arc = Arc::new(needed);
+        let _status = self.status.clone();
+        self.status = format!("Downloading {} icons...", needed_arc.len());
+        let handle = thread::spawn(move || {
+            let mut results = Vec::new();
+            let base_url = "https://raw.githubusercontent.com/andrenogrib/tbh_saveeditor/main/data/icons";
+            let dest_dir = dirs::config_dir().map(|mut p| { p.push("tbh-monitor"); p.push("icons"); p }).unwrap_or_else(|| std::path::PathBuf::from("icons"));
+            let _ = std::fs::create_dir_all(&dest_dir);
+            for fname in needed_arc.iter() {
+                let dest = dest_dir.join(fname);
+                if dest.exists() {
+                    match std::fs::read(&dest) {
+                        Ok(bytes) => { results.push((fname.clone(), bytes)); continue; }
+                        Err(_) => {}
+                    }
+                }
+                // Download from GitHub
+                let url = format!("{}/{}", base_url, fname);
+                if let Ok(output) = std::process::Command::new("curl.exe")
+                    .args(["-s", &url])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .output()
+                {
+                    if output.status.success() {
+                        let bytes = output.stdout;
+                        let _ = std::fs::write(&dest, &bytes);
+                        results.push((fname.clone(), bytes));
+                    }
+                }
+            }
+            results
+        });
+        self.icon_download_thread = Some(handle);
+    }
+
+    fn collect_needed_icons(&self) -> Vec<String> {
+        let mut needed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(ref player) = self.player_data {
+            // From items
+            if let Some(items) = player.other.get("itemSaveDatas").and_then(|i| i.as_array()) {
+                for item in items {
+                    if let Some(key) = item.get("ItemKey").and_then(|k| k.as_i64()) {
+                        if let Some(fname) = self.get_icon_filename(key) {
+                            needed.insert(fname);
+                        }
+                    }
+                }
+            }
+            // From hero equipment
+            if let Some(heroes) = player.other.get("heroSaveDatas").and_then(|h| h.as_array()) {
+                if let Some(items) = player.other.get("itemSaveDatas").and_then(|i| i.as_array()) {
+                    for hero in heroes {
+                        if let Some(ids) = hero.get("equippedItemIds").and_then(|e| e.as_array()) {
+                            for id_val in ids {
+                                if let Some(uid) = id_val.as_i64() {
+                                    if uid == 0 { continue; }
+                                    for item in items {
+                                        if item.get("UniqueId").and_then(|u| u.as_i64()) == Some(uid) {
+                                            if let Some(key) = item.get("ItemKey").and_then(|k| k.as_i64()) {
+                                                if let Some(fname) = self.get_icon_filename(key) {
+                                                    needed.insert(fname);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        needed.into_iter().collect()
+    }
+
+    fn process_icon_downloads(&mut self, ctx: &egui::Context) {
+        if let Some(handle) = self.icon_download_thread.take() {
+            if handle.is_finished() {
+                match handle.join() {
+                    Ok(results) => {
+                        for (fname, bytes) in results {
+                            self.load_icon_texture(ctx, &fname, &bytes);
+                        }
+                        self.icon_loaded = true;
+                        self.status = "Loaded (with icons)".to_string();
+                        ctx.request_repaint();
+                    }
+                    Err(_) => {
+                        self.icon_loaded = true;
+                        self.status = "Loaded (icons failed)".to_string();
+                    }
+                }
+            } else {
+                self.icon_download_thread = Some(handle);
+            }
+        } else if self.needs_icon_download() {
+            self.start_icon_download();
+        }
+    }
+
+    fn needs_icon_download(&self) -> bool {
+        !self.icon_loaded && self.icon_download_thread.is_none() && self.player_data.is_some()
+    }
+
+    fn load_icon_texture(&mut self, ctx: &egui::Context, fname: &str, bytes: &[u8]) {
+        if let Ok(img) = image::load_from_memory(bytes) {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let pixels = rgba.into_raw();
+            let color_img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
+            let tex_name = format!("item_icon_{}", fname);
+            let tex = ctx.load_texture(&tex_name, color_img, egui::TextureOptions::LINEAR);
+            self.icon_textures.insert(fname.to_string(), tex);
+        }
+    }
+
+    fn get_icon_texture(&self, key: i64) -> Option<&egui::TextureHandle> {
+        let fname = self.get_icon_filename(key)?;
+        self.icon_textures.get(&fname)
+    }
+}
+
+impl TbMonitorApp {
     fn fmt_num(n: i64) -> String {
         if n >= 1_000_000_000 { format!("{:.1}B", n as f64 / 1e9) }
         else if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1e6) }
@@ -294,7 +548,7 @@ impl TbMonitorApp {
     fn format_item_stats(item: &serde_json::Value) -> Vec<String> {
         let mut stats = Vec::new();
         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
-        let grade = Self::item_grade(key).max(1);
+        let grade = Self::item_grade(key).max(0).min(9);
         let category = key / 10000;
 
         // Base Equipment Stats
@@ -395,6 +649,50 @@ impl TbMonitorApp {
             _ => ("Companion Pet", "Passive Companion Buff"),
         }
     }
+
+    fn rune_name(key: i64) -> &'static str {
+        match key {
+            1 => "Rune of War",
+            10 => "Rune of Wealth",
+            11 | 12 | 13 | 14 | 15 | 16 => "Rune of Expansion",
+            20 => "Rune of Growth",
+            21 | 24 => "Rune of Command",
+            22 | 23 => "Rune of Expansion",
+            25 => "Rune of Wealth",
+            26 => "Rune of Growth",
+            27 => "Rune of Awakening",
+            101 | 103 | 105 | 107 | 109 | 111 | 113 | 115 | 117 | 119 | 121 | 123 | 125 | 127 => "Rune of Exploration",
+            102 | 104 | 106 | 108 | 110 | 112 | 114 | 116 | 118 | 120 | 122 | 124 | 126 | 128 => "Rune of Conquest",
+            201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 => "Rune of Wealth",
+            301 | 302 | 303 | 304 | 305 | 306 | 307 | 308 | 309 | 310 | 311 | 312 | 313 | 314 | 315 => "Rune of Growth",
+            401 | 403 | 407 | 410 | 412 => "Rune of the Shield",
+            402 | 404 | 406 | 4082 | 4101 => "Rune of the Gale",
+            405 | 408 | 411 | 413 | 4031 | 4081 => "Rune of War",
+            409 | 414 | 4061 => "Rune of Frenzy",
+            1021 => "Rune of Opening",
+            1031 => "Rune of Containment",
+            1051 | 1054 | 1801 | 1802 | 1803 | 1804 | 1805 => "Rune of Expansion",
+            1052 => "Rune of Containment",
+            1053 => "Rune of Exploration",
+            1055 => "Rune of Opening",
+            1056 | 1281 | 12821 | 11004 => "Rune of Infinity",
+            1061 | 1101 | 1161 | 11002 => "Rune of Containment",
+            1071 | 11003 => "Rune of the Vault",
+            1171 => "Rune of Brevity",
+            2031 | 3122 | 2132 | 3032 => "Rune of Alchemy",
+            2032 | 3031 | 3121 | 2131 => "Rune of Forging",
+            2071 | 2091 | 2111 | 2151 | 2152 => "Rune of Wealth",
+            3061 | 3091 | 3151 | 3152 => "Rune of Growth",
+            11001 => "Rune of Repose",
+            110011 => "Rune of Hoarding",
+            110012 | 180301 | 180501 => "Rune of Training",
+            13001 | 16001 | 160011 => "Rune of Storage",
+            13002 | 15001 | 1902001 => "Rune of the Mainspring",
+            130021 | 150011 | 190301 | 190302 | 190401 | 190501 | 190502 | 1905011 | 1905021 | 19020011 => "Rune of Lubrication",
+            15002 | 180201 | 180401 | 180601 => "Rune of Hoarding",
+            _ => "Unknown Rune",
+        }
+    }
     
     fn card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
         let is_hovered = ui.rect_contains_pointer(ui.max_rect());
@@ -433,24 +731,81 @@ impl TbMonitorApp {
         height_fn: impl Fn(&T) -> f32,
         mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
     ) {
+        if items.is_empty() { return; }
+        use taffy::prelude::*;
         let avail_w = ui.available_width();
-        let cols = (((avail_w + spacing) / (min_card_w + spacing)).floor() as usize)
+        let pad = spacing;
+        let content_w = (avail_w - pad * 2.0).max(0.0);
+        let cols = (((content_w + spacing) / (min_card_w + spacing)).floor() as usize)
             .clamp(1, max_cols.max(1));
-        let card_w = ((avail_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
-        let row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
-        let side_margin = ((avail_w - row_w) / 2.0).max(0.0);
+        let card_w = ((content_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut child_nodes = Vec::new();
 
         for chunk in items.chunks(cols) {
             let row_h = chunk.iter().map(|it| height_fn(it)).fold(default_h, f32::max);
-            ui.horizontal(|ui| {
-                ui.add_space(side_margin);
-                ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                for item in chunk {
-                    render_item(ui, item, card_w, row_h);
-                }
-            });
-            ui.add_space(spacing);
+            for _item in chunk {
+                let child_style = Style {
+                    size: Size {
+                        width: Dimension::Length(card_w),
+                        height: Dimension::Length(row_h),
+                    },
+                    ..Default::default()
+                };
+                let child = taffy.new_leaf(child_style).unwrap();
+                child_nodes.push(child);
+            }
         }
+
+        let container_style = Style {
+            display: Display::Grid,
+            grid_template_columns: (0..cols)
+                .map(|_| TrackSizingFunction::from_length(card_w))
+                .collect(),
+            gap: Size {
+                width: LengthPercentage::Length(spacing),
+                height: LengthPercentage::Length(spacing),
+            },
+            padding: Rect {
+                left: LengthPercentage::Length(pad),
+                right: LengthPercentage::Length(pad),
+                top: LengthPercentage::Length(pad),
+                bottom: LengthPercentage::Length(pad),
+            },
+            justify_content: Some(JustifyContent::Center),
+            ..Default::default()
+        };
+
+        let container = taffy.new_with_children(container_style, &child_nodes).unwrap();
+        taffy.compute_layout(
+            container,
+            Size {
+                width: AvailableSpace::Definite(avail_w),
+                height: AvailableSpace::MaxContent,
+            },
+        ).unwrap();
+
+        let container_layout = taffy.layout(container).unwrap();
+        let total_grid_h = container_layout.size.height;
+
+        ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
+            for (idx, &child) in child_nodes.iter().enumerate() {
+                let layout = taffy.layout(child).unwrap();
+                let x = layout.location.x;
+                let y = layout.location.y;
+                let w = layout.size.width;
+                let h = layout.size.height;
+
+                let rect = egui::Rect::from_min_size(
+                    ui.min_rect().min + egui::vec2(x, y),
+                    egui::vec2(w, h),
+                );
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    render_item(ui, &items[idx], w, h);
+                });
+            }
+        });
     }
 
     /// Responsive grid where each card keeps a fixed size (icon/slot-like
@@ -463,30 +818,206 @@ impl TbMonitorApp {
         card_w: f32,
         card_h: f32,
         max_cols: usize,
+        grid_pad: f32,
         mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
     ) {
+        if items.is_empty() { return; }
+        use taffy::prelude::*;
         let avail_w = ui.available_width();
-        let cols = (((avail_w + spacing) / (card_w + spacing)).floor() as usize)
+        let content_w = (avail_w - grid_pad * 2.0).max(0.0);
+        let cols = (((content_w + spacing) / (card_w + spacing)).floor() as usize)
             .clamp(1, max_cols.max(1));
-        let row_w = (cols as f32 * card_w) + ((cols as f32 - 1.0) * spacing);
-        let side_margin = ((avail_w - row_w) / 2.0).max(0.0);
 
-        for chunk in items.chunks(cols) {
-            ui.horizontal(|ui| {
-                ui.add_space(side_margin);
-                ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                for item in chunk {
-                    render_item(ui, item, card_w, card_h);
-                }
-            });
-            ui.add_space(spacing);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut child_nodes = Vec::new();
+        for _item in items {
+            let child_style = Style {
+                size: Size {
+                    width: Dimension::Length(card_w),
+                    height: Dimension::Length(card_h),
+                },
+                ..Default::default()
+            };
+            let child = taffy.new_leaf(child_style).unwrap();
+            child_nodes.push(child);
         }
+
+        let container_style = Style {
+            display: Display::Grid,
+            grid_template_columns: (0..cols)
+                .map(|_| TrackSizingFunction::from_length(card_w))
+                .collect(),
+            gap: Size {
+                width: LengthPercentage::Length(spacing),
+                height: LengthPercentage::Length(spacing),
+            },
+            padding: Rect {
+                left: LengthPercentage::Length(grid_pad),
+                right: LengthPercentage::Length(grid_pad),
+                top: LengthPercentage::Length(grid_pad),
+                bottom: LengthPercentage::Length(grid_pad),
+            },
+            justify_content: Some(JustifyContent::Center),
+            ..Default::default()
+        };
+
+        let container = taffy.new_with_children(container_style, &child_nodes).unwrap();
+        taffy.compute_layout(
+            container,
+            Size {
+                width: AvailableSpace::Definite(avail_w),
+                height: AvailableSpace::MaxContent,
+            },
+        ).unwrap();
+
+        let container_layout = taffy.layout(container).unwrap();
+        let total_grid_h = container_layout.size.height;
+
+        ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
+            for (idx, &child) in child_nodes.iter().enumerate() {
+                let layout = taffy.layout(child).unwrap();
+                let x = layout.location.x;
+                let y = layout.location.y;
+                let w = layout.size.width;
+                let h = layout.size.height;
+
+                let rect = egui::Rect::from_min_size(
+                    ui.min_rect().min + egui::vec2(x, y),
+                    egui::vec2(w, h),
+                );
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    render_item(ui, &items[idx], w, h);
+                });
+            }
+        });
+    }
+
+    fn grid_masonry<T>(
+        ui: &mut egui::Ui,
+        items: &[T],
+        heights: &[f32],
+        spacing: f32,
+        min_card_w: f32,
+        max_cols: usize,
+        mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
+    ) {
+        if items.is_empty() { return; }
+        use taffy::prelude::*;
+        let avail_w = ui.available_width();
+        // padding on both sides
+        let pad = spacing;
+        let content_w = (avail_w - pad * 2.0).max(0.0);
+        let cols = (((content_w + spacing) / (min_card_w + spacing)).floor() as usize)
+            .clamp(1, max_cols.max(1));
+        let card_w = ((content_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(min_card_w);
+
+        // Distribute items to columns (shortest column first)
+        let mut col_heights: Vec<f32> = vec![0.0; cols];
+        let mut col_items: Vec<Vec<(usize, f32)>> = vec![Vec::new(); cols];
+        for (i, h) in heights.iter().enumerate() {
+            let shortest = col_heights.iter().enumerate().min_by_key(|(_, ch)| (*ch * 1000.0) as i64).unwrap().0;
+            if !col_items[shortest].is_empty() {
+                col_heights[shortest] += spacing;
+            }
+            col_items[shortest].push((i, *h));
+            col_heights[shortest] += h;
+        }
+
+        // Build taffy tree: one column per grid column
+        let mut taffy = TaffyTree::<()>::new();
+        let mut col_nodes = Vec::new();
+        for col in &col_items {
+            let mut child_nodes = Vec::new();
+            for &(_, h) in col {
+                let child_style = Style {
+                    size: Size {
+                        width: Dimension::Length(card_w),
+                        height: Dimension::Length(h),
+                    },
+                    ..Default::default()
+                };
+                child_nodes.push(taffy.new_leaf(child_style).unwrap());
+            }
+            let col_style = Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                gap: Size {
+                    width: LengthPercentage::Length(0.0),
+                    height: LengthPercentage::Length(spacing),
+                },
+                ..Default::default()
+            };
+            let col_node = if child_nodes.is_empty() {
+                taffy.new_leaf(Style { size: Size { width: Dimension::Length(card_w), height: Dimension::Length(0.0) }, ..Default::default() }).unwrap()
+            } else {
+                taffy.new_with_children(col_style, &child_nodes).unwrap()
+            };
+            col_nodes.push(col_node);
+        }
+
+        let container_style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            gap: Size {
+                width: LengthPercentage::Length(spacing),
+                height: LengthPercentage::Length(0.0),
+            },
+            padding: Rect {
+                left: LengthPercentage::Length(pad),
+                right: LengthPercentage::Length(pad),
+                top: LengthPercentage::Length(pad),
+                bottom: LengthPercentage::Length(pad),
+            },
+            justify_content: Some(JustifyContent::Center),
+            ..Default::default()
+        };
+        let container = taffy.new_with_children(container_style, &col_nodes).unwrap();
+        taffy.compute_layout(
+            container,
+            Size {
+                width: AvailableSpace::Definite(avail_w),
+                height: AvailableSpace::MaxContent,
+            },
+        ).unwrap();
+
+        let total_h = taffy.layout(container).unwrap().size.height;
+
+        ui.allocate_ui(egui::vec2(avail_w, total_h), |ui| {
+            // Render each column
+            for (col_idx, col) in col_items.iter().enumerate() {
+                let col_layout = taffy.layout(col_nodes[col_idx]).unwrap();
+                let col_x = col_layout.location.x;
+                let col_y = col_layout.location.y;
+
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        ui.min_rect().min + egui::vec2(col_x, col_y),
+                        egui::vec2(card_w, col_layout.size.height),
+                    )),
+                    |ui| {
+                        for &(item_idx, h) in col {
+                            let child_layout = taffy.layout(taffy.children(col_nodes[col_idx]).unwrap()[col.iter().position(|&(i, _)| i == item_idx).unwrap()]).unwrap();
+                            let child_y = child_layout.location.y;
+                            ui.allocate_new_ui(
+                                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                    ui.min_rect().min + egui::vec2(0.0, child_y),
+                                    egui::vec2(card_w, h),
+                                )),
+                                |ui| {
+                                    render_item(ui, &items[item_idx], card_w, h);
+                                },
+                            );
+                        }
+                    },
+                );
+            }
+        });
     }
 
     fn stat_card(ui: &mut egui::Ui, width: f32, title: &str, value_text: egui::RichText) {
         ui.allocate_ui_with_layout(
             egui::vec2(width, 70.0),
-            egui::Layout::top_down(egui::Align::Min),
+            egui::Layout::top_down_justified(egui::Align::Min),
             |ui| {
                 let is_hovered = ui.rect_contains_pointer(ui.max_rect());
                 let fill = if is_hovered { egui::Color32::from_rgb(32, 35, 48) } else { CARD_BG };
@@ -512,6 +1043,31 @@ impl eframe::App for TbMonitorApp {
         if self.last_update.elapsed() >= self.update_interval {
             self.load_save();
             self.last_update = Instant::now();
+            // Re-download icons if save changed
+            if self.player_data.is_some() && self.icon_loaded {
+                self.icon_loaded = false;
+                self.start_icon_download();
+            }
+        }
+
+        // Process icon downloads
+        self.process_icon_downloads(ctx);
+        
+        // Auto-poll ngrok URL if ngrok is running
+        if self.ngrok_process.is_some() && self.ngrok_url.is_empty() {
+            if let Some(url) = Self::fetch_ngrok_url() {
+                self.ngrok_url = url.clone();
+                self.ngrok_status = format!("ngrok: {}", url);
+                self.generate_qr(ctx);
+            } else {
+                // Check if ngrok process died (auth error etc.)
+                if let Some(ref mut child) = self.ngrok_process {
+                    if child.try_wait().ok().flatten().is_some() {
+                        self.ngrok_process = None;
+                        self.ngrok_status = "ngrok gagal — cek terminal atau login dengan: ngrok config add-authtoken <token>".to_string();
+                    }
+                }
+            }
         }
         
         ctx.set_visuals(egui::Visuals {
@@ -522,35 +1078,41 @@ impl eframe::App for TbMonitorApp {
             ..Default::default()
         });
         
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(egui::RichText::new("TBH INDEX").color(ACCENT).size(20.0).strong()));
-                ui.add(egui::Label::new(egui::RichText::new("Taskbar Hero Stash Tracker").color(TEXT_MUTED).size(12.0)));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    if ui.add(egui::Button::new(egui::RichText::new("Settings").color(TEXT_SECONDARY).size(12.0)).fill(CARD_BG).stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))).clicked() {
-                        self.show_settings = !self.show_settings;
-                    }
-                    ui.label(egui::RichText::new(&self.status).color(TEXT_MUTED).size(11.0));
+        egui::TopBottomPanel::top("header")
+            .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::symmetric(16, 8)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(egui::RichText::new("TBH INDEX").color(ACCENT).size(20.0).strong()));
+                    ui.add(egui::Label::new(egui::RichText::new("Taskbar Hero Stash Tracker").color(TEXT_MUTED).size(12.0)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("Settings").color(TEXT_SECONDARY).size(12.0)).fill(CARD_BG).stroke(egui::Stroke::new(1.0_f32, CARD_BORDER))).clicked() {
+                            self.show_settings = !self.show_settings;
+                        }
+                        ui.label(egui::RichText::new(&self.status).color(TEXT_MUTED).size(11.0));
+                    });
                 });
             });
-            ui.add_space(8.0);
-        });
         
-        egui::TopBottomPanel::top("nav").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                for (tab, label) in [(Tab::Dashboard, "Dashboard"), (Tab::Heroes, "Heroes"), (Tab::Inventory, "Inventory"), (Tab::Runes, "Runes")] {
-                    let selected = self.active_tab == tab;
-                    let text = egui::RichText::new(label).color(if selected { ACCENT } else { TEXT_SECONDARY }).size(13.0);
-                    if ui.selectable_label(selected, text).clicked() { self.active_tab = tab; }
-                }
+        egui::TopBottomPanel::top("nav")
+            .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::symmetric(16, 4)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for (tab, label) in [(Tab::Dashboard, "Dashboard"), (Tab::Heroes, "Heroes"), (Tab::Inventory, "Inventory"), (Tab::Runes, "Runes")] {
+                        let selected = self.active_tab == tab;
+                        let text = egui::RichText::new(label).color(if selected { ACCENT } else { TEXT_SECONDARY }).size(13.0);
+                        if ui.selectable_label(selected, text).clicked() { self.active_tab = tab; }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new("Reload (sec)").color(TEXT_MUTED).size(11.0)));
+                        let mut secs = self.update_interval.as_secs() as f32;
+                        ui.add(egui::Slider::new(&mut secs, 5.0..=300.0).text(""));
+                        if self.update_interval.as_secs() != secs as u64 {
+                            self.update_interval = Duration::from_secs_f32(secs);
+                            Config { update_interval_secs: secs as u64, server_port: self.server_port, ngrok_url: self.ngrok_url.clone() }.save();
+                        }
+                    });
+                });
             });
-            ui.add_space(4.0);
-        });
         
         if self.show_settings {
             egui::Window::new("Settings")
@@ -559,43 +1121,78 @@ impl eframe::App for TbMonitorApp {
                 .show(ctx, |ui| {
                     ui.label(egui::RichText::new("Update Interval (sec)").color(TEXT_SECONDARY).size(12.0));
                     let mut secs = self.update_interval.as_secs() as u32;
-                    if ui.add(egui::DragValue::new(&mut secs).speed(1).range(5..=300)).changed() { self.update_interval = Duration::from_secs(secs as u64); }
+                    if ui.add(egui::DragValue::new(&mut secs).speed(1).range(5..=300)).changed() {
+                        self.update_interval = Duration::from_secs(secs as u64);
+                        Config { update_interval_secs: secs as u64, server_port: self.server_port, ngrok_url: self.ngrok_url.clone() }.save();
+                    }
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Server Port").color(TEXT_SECONDARY).size(12.0));
                     let mut port = self.server_port;
-                    if ui.add(egui::DragValue::new(&mut port).speed(1).range(1024..=65535)).changed() { self.server_port = port; }
+                    if ui.add(egui::DragValue::new(&mut port).speed(1).range(1024..=65535)).changed() {
+                        self.server_port = port;
+                        Config { update_interval_secs: self.update_interval.as_secs(), server_port: port, ngrok_url: self.ngrok_url.clone() }.save();
+                    }
                     if !self.server_running { if ui.button("Start Server").clicked() { self.start_server(); } }
                     else { ui.label(egui::RichText::new("Server running!").color(GREEN).size(12.0)); }
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Ngrok URL").color(TEXT_SECONDARY).size(12.0));
-                    ui.text_edit_singleline(&mut self.ngrok_url);
-                    if ui.button("Generate QR").clicked() { self.generate_qr(ctx); }
+                    if ui.text_edit_singleline(&mut self.ngrok_url).changed() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        Config { update_interval_secs: self.update_interval.as_secs(), server_port: self.server_port, ngrok_url: self.ngrok_url.clone() }.save();
+                        self.qr_texture = None;
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Start Ngrok (1-click)").clicked() {
+                            self.start_ngrok();
+                        }
+                        if self.ngrok_process.is_some() {
+                            if ui.button("Stop Ngrok").clicked() {
+                                self.stop_ngrok();
+                                self.ngrok_url.clear();
+                                self.ngrok_status.clear();
+                                self.qr_texture = None;
+                            }
+                        }
+                    });
+                    if !self.ngrok_status.is_empty() {
+                        ui.label(egui::RichText::new(&self.ngrok_status).color(TEXT_SECONDARY).size(11.0));
+                    }
+                    if !self.ngrok_url.is_empty() {
+                        if self.qr_texture.is_none() {
+                            self.generate_qr(ctx);
+                        }
+                        if let Some(tex) = &self.qr_texture {
+                            ui.add_space(8.0);
+                            ui.add(egui::widgets::Image::new(tex).max_width(160.0).max_height(160.0));
+                            ui.label(egui::RichText::new(&self.ngrok_url).color(TEXT_SECONDARY).size(9.0));
+                        }
+                    }
                     ui.add_space(8.0);
                     if ui.button("Close").clicked() { self.show_settings = false; }
                 });
         }
         
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(player) = self.player_data.clone() {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add_space(16.0);
-                    ui.horizontal(|ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::same(0)))
+            .show(ctx, |ui| {
+                if let Some(player) = self.player_data.clone() {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add_space(16.0);
-                        ui.vertical(|ui| {
-                            match self.active_tab {
-                                Tab::Dashboard => self.render_dashboard(ui, &player),
-                                Tab::Heroes => self.render_heroes(ui, &player),
-                                Tab::Inventory => self.render_inventory(ui, &player),
-                                Tab::Runes => self.render_runes(ui, &player),
-                            }
-                        });
+                        egui::Frame::NONE
+                            .inner_margin(egui::Margin::same(0))
+                            .show(ui, |ui| {
+                                match self.active_tab {
+                                    Tab::Dashboard => self.render_dashboard(ui, &player),
+                                    Tab::Heroes => self.render_heroes(ui, &player),
+                                    Tab::Inventory => self.render_inventory(ui, &player),
+                                    Tab::Runes => self.render_runes(ui, &player),
+                                }
+                            });
+                        ui.add_space(16.0);
                     });
-                    ui.add_space(16.0);
-                });
-            } else {
-                ui.centered_and_justified(|ui| { ui.label(egui::RichText::new("No save data loaded").color(TEXT_MUTED)); });
-            }
-        });
+                } else {
+                    ui.centered_and_justified(|ui| { ui.label(egui::RichText::new("No save data loaded").color(TEXT_MUTED)); });
+                }
+            });
     }
 }
 
@@ -643,7 +1240,7 @@ impl TbMonitorApp {
                 &heroes,
                 spacing,
                 200.0,
-                4,
+                3,
                 80.0,
                 |_| 80.0,
                 |ui, hero, hero_card_w, hero_card_h| {
@@ -654,7 +1251,7 @@ impl TbMonitorApp {
 
                     let response = ui.allocate_ui_with_layout(
                         egui::vec2(hero_card_w, hero_card_h),
-                        egui::Layout::top_down(egui::Align::Min),
+                        egui::Layout::top_down_justified(egui::Align::Min),
                         |ui| {
                             egui::Frame::NONE
                                 .fill(CARD_BG)
@@ -743,18 +1340,26 @@ impl TbMonitorApp {
                 HeroCard { value: hero, key, level, exp, unlocked, ability_points, allocated, equipped_ids, has_gear, height }
             }).collect();
 
-            Self::grid_stretch(
+            let mut hero_cards = hero_cards;
+            hero_cards.sort_by(|a, b| {
+                let a_cnt = a.equipped_ids.iter().filter(|&&id| id != 0).count();
+                let b_cnt = b.equipped_ids.iter().filter(|&&id| id != 0).count();
+                b_cnt.cmp(&a_cnt)
+            });
+
+            let hero_heights: Vec<f32> = hero_cards.iter().map(|hc| hc.height).collect();
+
+            Self::grid_masonry(
                 ui,
                 &hero_cards,
+                &hero_heights,
                 spacing,
-                340.0,
-                2,
-                60.0,
-                |hc| hc.height,
-                |ui, hc, card_w, row_height| {
+                280.0,
+                3,
+                |ui, hc, card_w, card_h| {
                         let _response = ui.allocate_ui_with_layout(
-                            egui::vec2(card_w, row_height),
-                            egui::Layout::top_down(egui::Align::Min),
+                            egui::vec2(card_w, card_h),
+                            egui::Layout::top_down_justified(egui::Align::Min),
                             |ui| {
                                 egui::Frame::NONE
                                     .fill(CARD_BG)
@@ -835,6 +1440,7 @@ impl TbMonitorApp {
                                                 let e_card_w = 52.0;
                                                 let e_margin = 3.0;
                                                 let e_outer = e_card_w + e_margin * 2.0;
+                                                let e_card_h = 56.0;
 
                                                 let display_items: Vec<(usize, &serde_json::Value)> = hc.equipped_ids.iter().enumerate()
                                                     .filter(|(_, uid)| **uid != 0)
@@ -847,21 +1453,24 @@ impl TbMonitorApp {
                                                         &display_items,
                                                         COMPACT_GRID_SPACING,
                                                         e_outer,
-                                                        46.0,
+                                                        e_card_h,
                                                         5,
+                                                        2.0,
                                                         |ui, (slot_idx, item), _slot_w, _slot_h| {
                                                                 let item_key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
-                                                                let grade = Self::item_grade(item_key).max(1).min(10);
+                                                                let grade = Self::item_grade(item_key).max(0).min(9);
                                                                 let bg = Self::item_grade_bg(grade);
                                                                 let border_color = Self::grade_color(grade);
+                                                                let grade_name = Self::grade_name(grade);
                                                                 let name = self.get_item_name(item_key);
-                                                                let short: String = name.chars().take(10).collect();
                                                                 let chaotic = item.get("IsChaotic").and_then(|c| c.as_bool()).unwrap_or(false);
                                                                 let enchants = item.get("EnchantCount").and_then(|e| e.as_array())
                                                                     .map(|a| a.iter().filter_map(|v| v.as_i64()).sum::<i64>()).unwrap_or(0);
+                                                                let icon_texture = self.get_icon_texture(item_key);
+                                                                let icon_s = 20.0;
 
                                                                 let resp = ui.allocate_ui_with_layout(
-                                                                    egui::vec2(e_outer, 46.0),
+                                                                    egui::vec2(e_outer, e_card_h),
                                                                     egui::Layout::top_down(egui::Align::Center),
                                                                     |ui| {
                                                                         let is_slot_hovered = ui.rect_contains_pointer(ui.max_rect());
@@ -880,8 +1489,10 @@ impl TbMonitorApp {
                                                                                 ui.set_width(e_card_w);
                                                                                 ui.vertical_centered(|ui| {
                                                                                     ui.add(egui::Label::new(egui::RichText::new(SLOT_NAMES[*slot_idx]).color(TEXT_MUTED).size(7.0)));
-                                                                                    ui.add_space(1.0);
-                                                                                    ui.label(egui::RichText::new(&short).color(TEXT_PRIMARY).size(7.0).strong());
+                                                                                    if let Some(tex) = icon_texture {
+                                                                                        ui.add(egui::widgets::Image::new(tex).max_width(icon_s).max_height(icon_s));
+                                                                                    }
+                                                                                    ui.label(egui::RichText::new(grade_name).color(border_color).size(6.0));
                                                                                     if chaotic {
                                                                                         ui.label(egui::RichText::new("C").color(YELLOW).size(6.0).strong());
                                                                                     } else if enchants > 0 {
@@ -983,7 +1594,78 @@ impl TbMonitorApp {
         ui.add_space(12.0);
         
         if let Some(items) = player.other.get("itemSaveDatas").and_then(|i| i.as_array()) {
-            let mut sorted: Vec<_> = items.iter().collect();
+            // Separate chests from regular items
+            let chests: Vec<_> = items.iter().filter(|item| {
+                let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                let cat = key / 10000;
+                cat == 91 || cat == 92
+            }).collect();
+            
+            let regular: Vec<_> = items.iter().filter(|item| {
+                let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                let cat = key / 10000;
+                cat != 91 && cat != 92
+            }).collect();
+            
+            // ---- Chests Section ----
+            if !chests.is_empty() {
+                ui.label(egui::RichText::new(format!("Chests ({})", chests.len())).color(TEXT_MUTED).size(13.0).strong());
+                ui.add_space(6.0);
+                let chest_spacing = COMPACT_GRID_SPACING;
+                let c_card_w = 100.0;
+                let c_margin = 6.0;
+                let c_outer = c_card_w + c_margin * 2.0;
+                Self::grid_fixed(
+                    ui,
+                    &chests,
+                    chest_spacing,
+                    c_outer,
+                    52.0,
+                    usize::MAX,
+                    4.0,
+                    |ui, item, _card_w, _card_h| {
+                        let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                        let name = self.get_item_name(key);
+                        let cat = key / 10000;
+                        let chest_label = if cat == 91 { "Stage Box" } else { "Boss Box" };
+                        let is_boss = cat == 92;
+                        let border_color = if is_boss { BOSS_BLUE } else { TEXT_MUTED };
+                        let bg = if is_boss { BOSS_BG } else { CARD_BG };
+                        let resp = ui.allocate_ui_with_layout(
+                            egui::vec2(c_outer, 52.0),
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| {
+                                let card_bg = if ui.rect_contains_pointer(ui.max_rect()) {
+                                    egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
+                                } else { bg };
+                                egui::Frame::NONE
+                                    .fill(card_bg)
+                                    .corner_radius(6.0)
+                                    .stroke(egui::Stroke::new(1.5_f32, border_color))
+                                    .inner_margin(egui::Margin::same(c_margin as i8))
+                                    .show(ui, |ui| {
+                                        ui.set_width(c_card_w);
+                                        ui.vertical_centered(|ui| {
+                                            ui.label(egui::RichText::new(chest_label).color(if is_boss { BOSS_BLUE } else { TEXT_SECONDARY }).size(9.0));
+                                            ui.add_space(1.0);
+                                            ui.label(egui::RichText::new(&name).color(if is_boss { BOSS_BLUE } else { TEXT_PRIMARY }).size(10.0).strong());
+                                        });
+                                    });
+                            },
+                        ).response;
+                        resp.on_hover_ui(|ui| {
+                            ui.set_min_width(200.0);
+                            ui.label(egui::RichText::new(&name).color(border_color).size(14.0).strong());
+                            ui.label(egui::RichText::new(format!("Type: {}", chest_label)).color(TEXT_SECONDARY).size(11.0));
+                            ui.label(egui::RichText::new(format!("ID: {}", key)).color(TEXT_MUTED).size(10.0));
+                        });
+                    },
+                );
+                ui.add_space(16.0);
+            }
+            
+            // ---- Regular Items ----
+            let mut sorted: Vec<_> = regular.iter().collect();
             
             // Filter by Category and Search
             let query = self.search_query.to_lowercase();
@@ -1039,34 +1721,37 @@ impl TbMonitorApp {
             }
             
             ui.label(egui::RichText::new(&format!("{} items", sorted.len())).color(TEXT_MUTED).size(11.0));
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             
-            let card_content_w = 100.0;
-            let margin = 8.0;
-            let card_outer_w = card_content_w + (margin * 2.0); // 116.0
-            let spacing = COMPACT_GRID_SPACING;
+            let card_w = 100.0;
+            let spacing = 4.0;
 
             Self::grid_fixed(
                 ui,
                 &sorted,
                 spacing,
-                card_outer_w,
-                72.0,
+                card_w,
+                card_w,
                 usize::MAX,
+                0.0,
                 |ui, item, _card_w, _card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let is_chaotic = item.get("IsChaotic").and_then(|c| c.as_bool()).unwrap_or(false);
-                        let enchants = item.get("EnchantCount").and_then(|c| c.as_i64()).unwrap_or(0);
+                        let enchants = item.get("EnchantCount")
+                            .and_then(|c| c.as_array())
+                            .map(|a| a.iter().filter_map(|v| v.as_i64()).sum::<i64>())
+                            .unwrap_or(0);
                         
                         let name = self.get_item_name(key);
-                        let short_name: String = name.chars().take(15).collect();
-                        let grade = Self::item_grade(key).max(1).min(10);
+                        let short_name: String = name.chars().take(14).collect();
+                        let grade = Self::item_grade(key).max(0).min(9);
                         let bg = Self::item_grade_bg(grade);
                         let border_color = Self::grade_color(grade);
                         let grade_name = Self::grade_name(grade);
+                        let icon_texture = self.get_icon_texture(key);
                         
                         let response = ui.allocate_ui_with_layout(
-                            egui::vec2(card_outer_w, 72.0),
+                            egui::vec2(card_w, card_w),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
                                 let is_item_hovered = ui.rect_contains_pointer(ui.max_rect());
@@ -1078,21 +1763,18 @@ impl TbMonitorApp {
                                 };
                                 egui::Frame::NONE
                                     .fill(card_bg)
-                                    .corner_radius(6.0)
+                                    .corner_radius(4.0)
                                     .stroke(card_stroke)
-                                    .inner_margin(egui::Margin::same(margin as i8))
+                                    .inner_margin(egui::Margin::same(2))
                                     .show(ui, |ui| {
-                                        ui.set_width(card_content_w);
                                         ui.vertical_centered(|ui| {
-                                            ui.add(egui::Label::new(egui::RichText::new(Self::item_type(key)).color(TEXT_SECONDARY).size(9.0)));
-                                            ui.add_space(2.0);
-                                            ui.label(egui::RichText::new(&short_name).color(TEXT_PRIMARY).size(10.0).strong());
-                                            ui.label(egui::RichText::new(grade_name).color(border_color).size(8.0));
-                                            if is_chaotic {
-                                                ui.label(egui::RichText::new("CHAOTIC").color(YELLOW).size(8.0).strong());
+                                            if let Some(tex) = icon_texture {
+                                                ui.add(egui::widgets::Image::from_texture(tex).max_width(80.0).max_height(80.0));
                                             }
-                                            if enchants > 0 {
-                                                ui.label(egui::RichText::new(format!("+{} ench", enchants)).color(ACCENT).size(8.0));
+                                            ui.add(egui::Label::new(egui::RichText::new(&short_name).color(TEXT_PRIMARY).size(8.0).strong()));
+                                            ui.label(egui::RichText::new(grade_name).color(border_color).size(7.0));
+                                            if is_chaotic {
+                                                ui.label(egui::RichText::new("CHAOTIC").color(YELLOW).size(7.0).strong());
                                             }
                                         });
                                     });
@@ -1153,7 +1835,77 @@ impl TbMonitorApp {
                 ui.add(egui::ProgressBar::new(progress).fill(egui::Color32::from_rgb(168, 85, 247)).animate(true));
             });
 
-            ui.add_space(16.0);
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("PETS & COMPANIONS").color(TEXT_SECONDARY).size(14.0).strong());
+            ui.add_space(10.0);
+
+            if let Some(pets) = player.other.get("PetSaveData").and_then(|p| p.as_array()) {
+                let spacing = GRID_SPACING;
+
+                Self::grid_stretch(
+                    ui,
+                    pets,
+                    spacing,
+                    180.0,
+                    4,
+                    75.0,
+                    |_| 75.0,
+                    |ui, pet, card_w, card_h| {
+                            let key = pet.get("PetKey").and_then(|k| k.as_i64()).unwrap_or(0);
+                            let unlocked = pet.get("IsUnlock").or_else(|| pet.get("IsUnLock")).and_then(|u| u.as_bool()).unwrap_or(false);
+                            let equipped = pet.get("IsEquipped").or_else(|| pet.get("IsViewed")).and_then(|e| e.as_bool()).unwrap_or(false);
+
+                            let (pet_name, pet_buff) = Self::pet_info(key);
+
+                             let resp = ui.allocate_ui_with_layout(
+                                 egui::vec2(card_w, card_h),
+                                 egui::Layout::top_down_justified(egui::Align::Min),
+                                 |ui| {
+                                    let is_pet_hovered = ui.rect_contains_pointer(ui.max_rect());
+                                    let pet_border_color = if equipped { YELLOW } else if unlocked { GREEN } else { CARD_BORDER };
+                                    let pet_stroke = egui::Stroke::new(1.0_f32, pet_border_color);
+                                    let pet_bg = if is_pet_hovered { egui::Color32::from_rgb(32, 35, 48) } else { CARD_BG };
+
+                                    egui::Frame::NONE
+                                        .fill(pet_bg)
+                                        .corner_radius(10.0)
+                                        .stroke(pet_stroke)
+                                        .inner_margin(egui::Margin::same(12))
+                                        .show(ui, |ui| {
+                                            ui.set_width(card_w - 24.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label(egui::RichText::new(pet_name).color(TEXT_PRIMARY).size(13.0).strong());
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if equipped {
+                                                        ui.label(egui::RichText::new("EQUIPPED").color(YELLOW).size(9.0).strong());
+                                                    } else if unlocked {
+                                                        ui.label(egui::RichText::new("UNLOCKED").color(GREEN).size(9.0).strong());
+                                                    } else {
+                                                        ui.label(egui::RichText::new("LOCKED").color(TEXT_MUTED).size(9.0));
+                                                    }
+                                                });
+                                            });
+                                            ui.add_space(4.0);
+                                            ui.label(egui::RichText::new(pet_buff).color(TEXT_SECONDARY).size(9.0));
+                                        });
+                                },
+                            ).response;
+
+                            resp.on_hover_ui(move |ui| {
+                                ui.set_min_width(220.0);
+                                ui.label(egui::RichText::new(pet_name).color(TEXT_PRIMARY).size(14.0).strong());
+                                ui.label(egui::RichText::new(format!("Pet ID: {}", key)).color(TEXT_MUTED).size(10.0));
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new(format!("Status: {}", if equipped { "Equipped Companion" } else if unlocked { "Unlocked" } else { "Locked" })).color(if equipped { YELLOW } else if unlocked { GREEN } else { TEXT_MUTED }).size(11.0));
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new("Passive Buffs:").color(TEXT_MUTED).size(10.0));
+                                ui.label(egui::RichText::new(format!("  • {}", pet_buff)).color(GREEN).size(11.0));
+                            });
+                    },
+                );
+            }
+
+            ui.add_space(20.0);
             ui.label(egui::RichText::new("RUNE NODES").color(TEXT_SECONDARY).size(14.0).strong());
             ui.add_space(10.0);
 
@@ -1174,7 +1926,7 @@ impl TbMonitorApp {
 
                         let resp = ui.allocate_ui_with_layout(
                             egui::vec2(card_w, card_h),
-                            egui::Layout::top_down(egui::Align::Min),
+                            egui::Layout::top_down_justified(egui::Align::Min),
                             |ui| {
                                 let is_rune_hovered = ui.rect_contains_pointer(ui.max_rect());
                                 let rune_stroke = if is_unlocked {
@@ -1191,12 +1943,12 @@ impl TbMonitorApp {
                                     .inner_margin(egui::Margin::same(10))
                                     .show(ui, |ui| {
                                         ui.set_width(card_w - 20.0);
-                                        ui.label(egui::RichText::new(format!("Rune #{}", key)).color(TEXT_PRIMARY).size(12.0).strong());
-                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new(Self::rune_name(key)).color(TEXT_PRIMARY).size(11.0).strong());
+                                        ui.add_space(2.0);
                                         if is_unlocked {
-                                            ui.label(egui::RichText::new(format!("Lv. {}", level)).color(egui::Color32::from_rgb(168, 85, 247)).size(11.0).strong());
+                                            ui.label(egui::RichText::new(format!("Lv. {}", level)).color(egui::Color32::from_rgb(168, 85, 247)).size(10.0).strong());
                                         } else {
-                                            ui.label(egui::RichText::new("Locked").color(TEXT_MUTED).size(11.0));
+                                            ui.label(egui::RichText::new("Locked").color(TEXT_MUTED).size(10.0));
                                         }
                                     });
                             },
@@ -1204,80 +1956,10 @@ impl TbMonitorApp {
 
                         resp.on_hover_ui(move |ui| {
                             ui.set_min_width(180.0);
-                            ui.label(egui::RichText::new(format!("Rune Node #{}", key)).color(TEXT_PRIMARY).size(13.0).strong());
+                            ui.label(egui::RichText::new(Self::rune_name(key)).color(TEXT_PRIMARY).size(13.0).strong());
                             ui.add_space(4.0);
                             ui.label(egui::RichText::new(format!("Level: {}", level)).color(if is_unlocked { egui::Color32::from_rgb(168, 85, 247) } else { TEXT_MUTED }).size(11.0));
                             ui.label(egui::RichText::new(format!("Status: {}", if is_unlocked { "Active" } else { "Locked" })).color(if is_unlocked { GREEN } else { TEXT_MUTED }).size(11.0));
-                        });
-                },
-            );
-        }
-
-        ui.add_space(20.0);
-        ui.label(egui::RichText::new("PETS & COMPANIONS").color(TEXT_SECONDARY).size(14.0).strong());
-        ui.add_space(10.0);
-
-        if let Some(pets) = player.other.get("PetSaveData").and_then(|p| p.as_array()) {
-            let spacing = GRID_SPACING;
-
-            Self::grid_stretch(
-                ui,
-                pets,
-                spacing,
-                180.0,
-                4,
-                75.0,
-                |_| 75.0,
-                |ui, pet, card_w, card_h| {
-                        let key = pet.get("PetKey").and_then(|k| k.as_i64()).unwrap_or(0);
-                        let unlocked = pet.get("IsUnlock").or_else(|| pet.get("IsUnLock")).and_then(|u| u.as_bool()).unwrap_or(false);
-                        let equipped = pet.get("IsEquipped").or_else(|| pet.get("IsViewed")).and_then(|e| e.as_bool()).unwrap_or(false);
-
-                        let (pet_name, pet_buff) = Self::pet_info(key);
-
-                        let resp = ui.allocate_ui_with_layout(
-                            egui::vec2(card_w, card_h),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                let is_pet_hovered = ui.rect_contains_pointer(ui.max_rect());
-                                let pet_border_color = if equipped { YELLOW } else if unlocked { GREEN } else { CARD_BORDER };
-                                let pet_stroke = egui::Stroke::new(1.0_f32, pet_border_color);
-                                let pet_bg = if is_pet_hovered { egui::Color32::from_rgb(32, 35, 48) } else { CARD_BG };
-
-                                egui::Frame::NONE
-                                    .fill(pet_bg)
-                                    .corner_radius(10.0)
-                                    .stroke(pet_stroke)
-                                    .inner_margin(egui::Margin::same(12))
-                                    .show(ui, |ui| {
-                                        ui.set_width(card_w - 24.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new(pet_name).color(TEXT_PRIMARY).size(13.0).strong());
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                if equipped {
-                                                    ui.label(egui::RichText::new("EQUIPPED").color(YELLOW).size(9.0).strong());
-                                                } else if unlocked {
-                                                    ui.label(egui::RichText::new("UNLOCKED").color(GREEN).size(9.0).strong());
-                                                } else {
-                                                    ui.label(egui::RichText::new("LOCKED").color(TEXT_MUTED).size(9.0));
-                                                }
-                                            });
-                                        });
-                                        ui.add_space(4.0);
-                                        ui.label(egui::RichText::new(pet_buff).color(TEXT_SECONDARY).size(9.0));
-                                    });
-                            },
-                        ).response;
-
-                        resp.on_hover_ui(move |ui| {
-                            ui.set_min_width(220.0);
-                            ui.label(egui::RichText::new(pet_name).color(TEXT_PRIMARY).size(14.0).strong());
-                            ui.label(egui::RichText::new(format!("Pet ID: {}", key)).color(TEXT_MUTED).size(10.0));
-                            ui.add_space(4.0);
-                            ui.label(egui::RichText::new(format!("Status: {}", if equipped { "Equipped Companion" } else if unlocked { "Unlocked" } else { "Locked" })).color(if equipped { YELLOW } else if unlocked { GREEN } else { TEXT_MUTED }).size(11.0));
-                            ui.add_space(4.0);
-                            ui.label(egui::RichText::new("Passive Buffs:").color(TEXT_MUTED).size(10.0));
-                            ui.label(egui::RichText::new(format!("  • {}", pet_buff)).color(GREEN).size(11.0));
                         });
                 },
             );
