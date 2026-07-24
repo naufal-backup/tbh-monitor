@@ -1422,7 +1422,7 @@ impl TbMonitorApp {
                     .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
                     .unwrap_or_default();
                 let has_gear = unlocked && equipped_ids.iter().any(|&id| id != 0);
-                let height = if unlocked { if has_gear { 300.0 } else { 110.0 } } else { 60.0 };
+                let height = if unlocked { if has_gear { 120.0 } else { 110.0 } } else { 60.0 };
                 HeroCard { value: hero, key, level, exp, unlocked, ability_points, allocated, equipped_ids, has_gear, height }
             }).collect();
 
@@ -1523,10 +1523,10 @@ impl TbMonitorApp {
                                                 });
                                                 ui.add_space(2.0);
 
-                                                let e_card_w = 66.0;
-                                                let e_margin = 3.0;
+                                                let e_card_w = 22.0;
+                                                let e_margin = 1.0;
                                                 let e_outer = e_card_w + e_margin * 2.0;
-                                                let e_card_h = 72.0;
+                                                let e_card_h = 26.0;
 
                                                 let display_items: Vec<(usize, &serde_json::Value)> = hc.equipped_ids.iter().enumerate()
                                                     .filter(|(_, uid)| **uid != 0)
@@ -1540,54 +1540,48 @@ impl TbMonitorApp {
                                                         COMPACT_GRID_SPACING,
                                                         e_outer,
                                                         e_card_h,
-                                                        5,
-                                                        2.0,
+                                                        10,
+                                                        1.0,
                                                         |ui, (slot_idx, item), _slot_w, _slot_h| {
                                                                 let item_key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                                                                 let grade = Self::item_grade(item_key).max(0).min(9);
                                                                 let bg = Self::item_grade_bg(grade);
                                                                 let border_color = Self::grade_color(grade);
-                                                                let grade_name = Self::grade_name(grade);
                                                                 let name = self.get_item_name(item_key);
                                                                 let chaotic = item.get("IsChaotic").and_then(|c| c.as_bool()).unwrap_or(false);
                                                                 let enchants = item.get("EnchantCount").and_then(|e| e.as_array())
                                                                     .map(|a| a.iter().filter_map(|v| v.as_i64()).sum::<i64>()).unwrap_or(0);
                                                                 let icon_texture = self.get_icon_texture(item_key);
-                                                                let icon_s = 30.0;
 
-                                                                let resp = ui.allocate_ui_with_layout(
+                                                                let (slot_rect, resp) = ui.allocate_exact_size(
                                                                     egui::vec2(e_outer, e_card_h),
-                                                                    egui::Layout::top_down(egui::Align::Center),
-                                                                    |ui| {
-                                                                        let is_slot_hovered = ui.rect_contains_pointer(ui.max_rect());
-                                                                        let slot_stroke = egui::Stroke::new(1.0_f32, border_color);
-                                                                        let slot_bg = if is_slot_hovered {
-                                                                            egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
-                                                                        } else {
-                                                                            bg
-                                                                        };
-                                                                        egui::Frame::NONE
-                                                                            .fill(slot_bg)
-                                                                            .corner_radius(4.0)
-                                                                            .stroke(slot_stroke)
-                                                                            .inner_margin(egui::Margin::same(e_margin as i8))
-                                                                            .show(ui, |ui| {
-                                                                                ui.set_width(e_card_w);
-                                                                                ui.vertical_centered(|ui| {
-                                                                                    ui.add(egui::Label::new(egui::RichText::new(SLOT_NAMES[*slot_idx]).color(TEXT_MUTED).size(8.0)));
-                                                                                    if let Some(tex) = icon_texture {
-                                                                                        ui.add(egui::widgets::Image::new(tex).max_width(icon_s).max_height(icon_s));
-                                                                                    }
-                                                                                    ui.label(egui::RichText::new(grade_name).color(border_color).size(7.0));
-                                                                                    if chaotic {
-                                                                                        ui.label(egui::RichText::new("C").color(YELLOW).size(7.0).strong());
-                                                                                    } else if enchants > 0 {
-                                                                                        ui.label(egui::RichText::new(format!("+{}", enchants)).color(ACCENT).size(7.0));
-                                                                                    }
-                                                                                });
-                                                                            });
-                                                                    },
-                                                                ).response;
+                                                                    egui::Sense::hover(),
+                                                                );
+                                                                let is_slot_hovered = resp.hovered();
+                                                                let slot_bg = if is_slot_hovered {
+                                                                    egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
+                                                                } else {
+                                                                    bg
+                                                                };
+                                                                let sp = ui.painter();
+                                                                sp.rect_filled(slot_rect, 3.0, slot_bg);
+                                                                sp.rect_stroke(slot_rect, 3.0, egui::Stroke::new(1.0, border_color));
+
+                                                                // Icon fills the slot
+                                                                if let Some(tex) = icon_texture {
+                                                                    let ir = slot_rect.shrink(2.0);
+                                                                    sp.image(
+                                                                        tex.id(),
+                                                                        ir,
+                                                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                                                        egui::Color32::WHITE,
+                                                                    );
+                                                                }
+
+                                                                // Grade/enchant tiny indicator at bottom
+                                                                if chaotic {
+                                                                    sp.circle_filled(slot_rect.left_bottom() + egui::vec2(3.0, -3.0), 2.0, YELLOW);
+                                                                }
 
                                                                  let tip_name = name.clone();
                                                                 let tip_border = border_color;
@@ -1738,49 +1732,41 @@ impl TbMonitorApp {
                 ui.label(egui::RichText::new(format!("Chests ({})", chests.len())).color(TEXT_MUTED).size(13.0).strong());
                 ui.add_space(6.0);
                 let chest_spacing = COMPACT_GRID_SPACING;
-                let c_card_w = 130.0;
-                let c_margin = 6.0;
+                let c_card_w = 44.0;
+                let c_margin = 2.0;
                 let c_outer = c_card_w + c_margin * 2.0;
                 Self::grid_square(
                     ui,
                     &chests,
                     chest_spacing,
                     c_outer,
-                    c_outer + 40.0,
+                    c_outer + 4.0,
                     usize::MAX,
                     |ui, item, card_w, card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
                         let name = self.get_item_name(key);
                         let cat = key / 10000;
-                        let chest_label = if cat == 91 { "Stage Box" } else { "Boss Box" };
+                        let chest_label = if cat == 91 { "Stage" } else { "Boss" };
                         let is_boss = cat == 92;
                         let border_color = if is_boss { BOSS_BLUE } else { TEXT_MUTED };
                         let bg = if is_boss { BOSS_BG } else { CARD_BG };
-                        let resp = ui.allocate_ui_with_layout(
-                            egui::vec2(card_w, card_h),
-                            egui::Layout::top_down(egui::Align::Center),
-                            |ui| {
-                                let card_bg = if ui.rect_contains_pointer(ui.max_rect()) {
-                                    egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
-                                } else { bg };
-                                egui::Frame::NONE
-                                    .fill(card_bg)
-                                    .corner_radius(6.0)
-                                    .stroke(egui::Stroke::new(1.5_f32, border_color))
-                                    .inner_margin(egui::Margin::same(c_margin as i8))
-                                    .show(ui, |ui| {
-                                        ui.set_width(card_w - c_margin * 2.0);
-                                        ui.set_min_height(card_h - c_margin * 2.0);
-                                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                            ui.add_space(((card_h - c_margin * 2.0) * 0.15).max(0.0));
-                                            ui.label(egui::RichText::new(chest_label).color(if is_boss { BOSS_BLUE } else { TEXT_SECONDARY }).size(9.0));
-                                            ui.add_space(1.0);
-                                            ui.label(egui::RichText::new(&name).color(if is_boss { BOSS_BLUE } else { TEXT_PRIMARY }).size(10.0).strong());
-                                        });
-                                    });
-                            },
-                        ).response;
-                        resp.on_hover_ui(|ui| {
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::hover());
+                        let hovered = response.hovered();
+                        let card_bg = if hovered {
+                            egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
+                        } else { bg };
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 4.0, card_bg);
+                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, border_color));
+                        let label_color = if is_boss { BOSS_BLUE } else { TEXT_SECONDARY };
+                        painter.text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            chest_label,
+                            egui::FontId::proportional(7.0),
+                            label_color,
+                        );
+                        response.on_hover_ui(move |ui| {
                             ui.set_min_width(200.0);
                             ui.label(egui::RichText::new(&name).color(border_color).size(14.0).strong());
                             ui.label(egui::RichText::new(format!("Type: {}", chest_label)).color(TEXT_SECONDARY).size(11.0));
@@ -1854,7 +1840,7 @@ impl TbMonitorApp {
             ui.label(egui::RichText::new(&format!("{} items", sorted.len())).color(TEXT_MUTED).size(11.0));
             ui.add_space(4.0);
             
-            let card_w = 130.0;
+            let card_w = 44.0;
             let spacing = COMPACT_GRID_SPACING;
 
             Self::grid_square(
@@ -1862,7 +1848,7 @@ impl TbMonitorApp {
                 &sorted,
                 spacing,
                 card_w,
-                card_w + 32.0,
+                card_w + 4.0,
                 usize::MAX,
                 |ui, item, card_w, card_h| {
                         let key = item.get("ItemKey").and_then(|k| k.as_i64()).unwrap_or(0);
@@ -1871,8 +1857,6 @@ impl TbMonitorApp {
                             .and_then(|c| c.as_array())
                             .map(|a| a.iter().filter_map(|v| v.as_i64()).sum::<i64>())
                             .unwrap_or(0);
-                        // Item level — save files in this game store it as either
-                        // "Level" or "ItemLevel" depending on category; try both.
                         let level = item.get("Level").and_then(|l| l.as_i64())
                             .or_else(|| item.get("ItemLevel").and_then(|l| l.as_i64()))
                             .unwrap_or(0);
@@ -1883,58 +1867,57 @@ impl TbMonitorApp {
                         let border_color = Self::grade_color(grade);
                         let grade_name = Self::grade_name(grade);
                         let icon_texture = self.get_icon_texture(key);
-                        
-                        let response = ui.allocate_ui_with_layout(
+
+                        let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(card_w, card_h),
-                            egui::Layout::top_down(egui::Align::Center),
-                            |ui| {
-                                let is_item_hovered = ui.rect_contains_pointer(ui.max_rect());
-                                let card_stroke = egui::Stroke::new(1.5_f32, border_color);
-                                let card_bg = if is_item_hovered {
-                                    egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
-                                } else {
-                                    bg
-                                };
-                                egui::Frame::NONE
-                                    .fill(card_bg)
-                                    .corner_radius(6.0)
-                                    .stroke(card_stroke)
-                                    .inner_margin(egui::Margin::same(2))
-                                    .show(ui, |ui| {
-                                        ui.set_width(card_w - 4.0);
-                                        ui.set_min_height(card_h - 4.0);
-                                        let full_rect = ui.available_rect_before_wrap();
-                                        ui.allocate_rect(full_rect, egui::Sense::hover());
+                            egui::Sense::hover(),
+                        );
+                        let is_item_hovered = response.hovered();
+                        let card_bg = if is_item_hovered {
+                            egui::Color32::from_rgb(bg.r().saturating_add(25), bg.g().saturating_add(25), bg.b().saturating_add(30))
+                        } else {
+                            bg
+                        };
+                        let painter = ui.painter();
 
-                                        if let Some(tex) = icon_texture {
-                                            let icon_dim = full_rect.width().min(full_rect.height()) * 0.92;
-                                            let icon_rect = egui::Rect::from_center_size(full_rect.center(), egui::vec2(icon_dim, icon_dim));
-                                            ui.put(icon_rect, egui::widgets::Image::from_texture(tex));
-                                        }
+                        // Background
+                        painter.rect_filled(rect, 4.0, card_bg);
+                        // Border
+                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, border_color));
 
-                                        if is_chaotic {
-                                            ui.painter().circle_filled(full_rect.left_top() + egui::vec2(7.0, 7.0), 4.0, YELLOW);
-                                        }
+                        // Icon — fills the entire card with tiny margin
+                        if let Some(tex) = icon_texture {
+                            let icon_rect = rect.shrink(2.0);
+                            painter.image(
+                                tex.id(),
+                                icon_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
 
-                                        if level > 0 {
-                                            let badge_w = 8.0 + (level.to_string().len() as f32) * 6.5;
-                                            let badge_h = 14.0;
-                                            let badge_rect = egui::Rect::from_min_size(
-                                                full_rect.max - egui::vec2(badge_w + 2.0, badge_h + 2.0),
-                                                egui::vec2(badge_w, badge_h),
-                                            );
-                                            ui.painter().rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_unmultiplied(8, 8, 12, 225));
-                                            ui.painter().text(
-                                                badge_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                level.to_string(),
-                                                egui::FontId::proportional(9.0),
-                                                egui::Color32::from_rgb(235, 235, 235),
-                                            );
-                                        }
-                                    });
-                            },
-                        ).response;
+                        // Chaotic badge
+                        if is_chaotic {
+                            painter.circle_filled(rect.left_top() + egui::vec2(4.0, 4.0), 2.5, YELLOW);
+                        }
+
+                        // Level badge
+                        if level > 0 {
+                            let badge_w = 5.0 + (level.to_string().len() as f32) * 4.0;
+                            let badge_h = 10.0;
+                            let badge_rect = egui::Rect::from_min_size(
+                                rect.right_top() + egui::vec2(-badge_w - 1.0, 1.0),
+                                egui::vec2(badge_w, badge_h),
+                            );
+                            painter.rect_filled(badge_rect, 2.0, egui::Color32::from_rgba_unmultiplied(8, 8, 12, 225));
+                            painter.text(
+                                badge_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                level.to_string(),
+                                egui::FontId::proportional(7.0),
+                                egui::Color32::from_rgb(235, 235, 235),
+                            );
+                        }
                         
                         let tooltip_name = name.clone();
                         let tooltip_type = Self::item_type(key);
