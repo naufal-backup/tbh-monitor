@@ -104,6 +104,7 @@ struct TbMonitorApp {
     icon_textures: std::collections::HashMap<String, egui::TextureHandle>,
     icon_download_thread: Option<thread::JoinHandle<Vec<(String, Vec<u8>)>>>,
     icon_loaded: bool,
+    hero_card_heights: std::collections::HashMap<i64, f32>,
 }
 
 #[derive(PartialEq)]
@@ -140,6 +141,7 @@ impl Default for TbMonitorApp {
             icon_textures: std::collections::HashMap::new(),
             icon_download_thread: None,
             icon_loaded: false,
+            hero_card_heights: std::collections::HashMap::new(),
         }
     }
 }
@@ -981,6 +983,13 @@ impl TbMonitorApp {
         });
     }
 
+    /// Returns the *actual measured* height of each item (in original item
+    /// order) so the caller can feed real content heights back in on the
+    /// next frame — the `heights` argument passed in is only an initial
+    /// estimate used for column-packing order, and real content is free to
+    /// be taller (e.g. hero cards with variable skill/gear counts). Without
+    /// this feedback loop, cards whose true height exceeds the estimate
+    /// paint past their allotted slot and overlap the row/column below.
     fn grid_masonry<T>(
         ui: &mut egui::Ui,
         items: &[T],
@@ -989,8 +998,8 @@ impl TbMonitorApp {
         min_card_w: f32,
         max_cols: usize,
         mut render_item: impl FnMut(&mut egui::Ui, &T, f32, f32),
-    ) {
-        if items.is_empty() { return; }
+    ) -> Vec<f32> {
+        if items.is_empty() { return Vec::new(); }
         use taffy::prelude::*;
         let avail_w = ui.available_width();
         // padding on both sides
@@ -1071,6 +1080,11 @@ impl TbMonitorApp {
 
         let total_h = taffy.layout(container).unwrap().size.height;
 
+        // Filled in with the *actual* rendered height of each item (may
+        // exceed the `h` estimate the column was packed with); returned to
+        // the caller so it can be fed back in as next frame's estimate.
+        let mut measured: Vec<f32> = heights.to_vec();
+
         ui.allocate_ui(egui::vec2(avail_w, total_h), |ui| {
             let base = ui.max_rect().min;
             // Render each column
@@ -1089,7 +1103,7 @@ impl TbMonitorApp {
                         for &(item_idx, h) in col {
                             let child_layout = taffy.layout(taffy.children(col_nodes[col_idx]).unwrap()[col.iter().position(|&(i, _)| i == item_idx).unwrap()]).unwrap();
                             let child_y = child_layout.location.y;
-                            ui.allocate_new_ui(
+                            let inner = ui.allocate_new_ui(
                                 egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
                                     col_base + egui::vec2(0.0, child_y),
                                     egui::vec2(card_w, h),
@@ -1098,11 +1112,16 @@ impl TbMonitorApp {
                                     render_item(ui, &items[item_idx], card_w, h);
                                 },
                             );
+                            // Real content height, which can be taller than
+                            // the `h` estimate this slot was packed with.
+                            measured[item_idx] = inner.response.rect.height().max(h);
                         }
                     },
                 );
             }
         });
+
+        measured
     }
 
     fn stat_card(ui: &mut egui::Ui, width: f32, title: &str, value_text: egui::RichText) {
@@ -1383,7 +1402,7 @@ impl TbMonitorApp {
         }
     }
     
-    fn render_heroes(&self, ui: &mut egui::Ui, player: &es3::PlayerData) {
+    fn render_heroes(&mut self, ui: &mut egui::Ui, player: &es3::PlayerData) {
         ui.label(egui::RichText::new("HEROES DETAILS").color(TEXT_SECONDARY).size(14.0).strong());
         ui.add_space(12.0);
 
@@ -1429,7 +1448,12 @@ impl TbMonitorApp {
                     .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
                     .unwrap_or_default();
                 let has_gear = unlocked && equipped_ids.iter().any(|&id| id != 0);
-                let height = if unlocked { if has_gear { 120.0 } else { 110.0 } } else { 60.0 };
+                // Static fallback for the very first frame (before we've
+                // measured anything); real content is usually taller once
+                // skills/gear rows are accounted for, and any mismatch
+                // self-corrects next frame via hero_card_heights below.
+                let default_height = if unlocked { if has_gear { 120.0 } else { 110.0 } } else { 60.0 };
+                let height = self.hero_card_heights.get(&key).copied().unwrap_or(default_height);
                 HeroCard { value: hero, key, level, exp, unlocked, ability_points, allocated, equipped_ids, has_gear, height }
             }).collect();
 
@@ -1441,8 +1465,9 @@ impl TbMonitorApp {
             });
 
             let hero_heights: Vec<f32> = hero_cards.iter().map(|hc| hc.height).collect();
+            let hero_keys: Vec<i64> = hero_cards.iter().map(|hc| hc.key).collect();
 
-            Self::grid_masonry(
+            let measured_heights = Self::grid_masonry(
                 ui,
                 &hero_cards,
                 &hero_heights,
@@ -1667,6 +1692,24 @@ impl TbMonitorApp {
                         );
                 },
             );
+
+            // Feed the just-measured real heights back into the cache for
+            // next frame's packing pass. If any card's true height didn't
+            // match what it was packed with this frame (new hero data,
+            // window resize, etc.), request another repaint so the layout
+            // settles onto the correct height immediately instead of
+            // staying visually overlapped until the next unrelated repaint.
+            let mut changed = false;
+            for (key, measured_h) in hero_keys.iter().zip(measured_heights.iter()) {
+                let padded = measured_h + 2.0;
+                let prev = self.hero_card_heights.insert(*key, padded);
+                if prev.map_or(true, |p| (p - padded).abs() > 0.5) {
+                    changed = true;
+                }
+            }
+            if changed {
+                ui.ctx().request_repaint();
+            }
         }
     }
     
