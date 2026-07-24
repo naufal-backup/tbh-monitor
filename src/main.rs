@@ -874,6 +874,7 @@ impl TbMonitorApp {
         let total_grid_h = container_layout.size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
+            let base = ui.min_rect().min;
             for (idx, &child) in child_nodes.iter().enumerate() {
                 let layout = taffy.layout(child).unwrap();
                 let x = layout.location.x;
@@ -882,7 +883,7 @@ impl TbMonitorApp {
                 let h = layout.size.height;
 
                 let rect = egui::Rect::from_min_size(
-                    ui.min_rect().min + egui::vec2(x, y),
+                    base + egui::vec2(x, y),
                     egui::vec2(w, h),
                 );
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -960,6 +961,7 @@ impl TbMonitorApp {
         let total_grid_h = container_layout.size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_grid_h), |ui| {
+            let base = ui.min_rect().min;
             for (idx, &child) in child_nodes.iter().enumerate() {
                 let layout = taffy.layout(child).unwrap();
                 let x = layout.location.x;
@@ -968,7 +970,7 @@ impl TbMonitorApp {
                 let h = layout.size.height;
 
                 let rect = egui::Rect::from_min_size(
-                    ui.min_rect().min + egui::vec2(x, y),
+                    base + egui::vec2(x, y),
                     egui::vec2(w, h),
                 );
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -1069,6 +1071,7 @@ impl TbMonitorApp {
         let total_h = taffy.layout(container).unwrap().size.height;
 
         ui.allocate_ui(egui::vec2(avail_w, total_h), |ui| {
+            let base = ui.min_rect().min;
             // Render each column
             for (col_idx, col) in col_items.iter().enumerate() {
                 let col_layout = taffy.layout(col_nodes[col_idx]).unwrap();
@@ -1077,16 +1080,17 @@ impl TbMonitorApp {
 
                 ui.allocate_new_ui(
                     egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                        ui.min_rect().min + egui::vec2(col_x, col_y),
+                        base + egui::vec2(col_x, col_y),
                         egui::vec2(card_w, col_layout.size.height),
                     )),
                     |ui| {
+                        let col_base = ui.min_rect().min;
                         for &(item_idx, h) in col {
                             let child_layout = taffy.layout(taffy.children(col_nodes[col_idx]).unwrap()[col.iter().position(|&(i, _)| i == item_idx).unwrap()]).unwrap();
                             let child_y = child_layout.location.y;
                             ui.allocate_new_ui(
                                 egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                                    ui.min_rect().min + egui::vec2(0.0, child_y),
+                                    col_base + egui::vec2(0.0, child_y),
                                     egui::vec2(card_w, h),
                                 )),
                                 |ui| {
@@ -1771,7 +1775,7 @@ impl TbMonitorApp {
                             ui.label(egui::RichText::new(&name).color(border_color).size(14.0).strong());
                             ui.label(egui::RichText::new(format!("Type: {}", chest_label)).color(TEXT_SECONDARY).size(11.0));
                             ui.label(egui::RichText::new(format!("ID: {}", key)).color(TEXT_MUTED).size(10.0));
-                            let qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(1);
+                            let qty = item.get("Quantity").and_then(|q| q.as_i64()).unwrap_or(0);
                             if qty > 1 {
                                 ui.label(egui::RichText::new(format!("Quantity: {}", qty)).color(YELLOW).size(11.0).strong());
                             }
