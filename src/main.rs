@@ -1565,7 +1565,7 @@ impl TbMonitorApp {
                                                                 };
                                                                 let sp = ui.painter();
                                                                 sp.rect_filled(slot_rect, 3.0, slot_bg);
-                                                                sp.rect_stroke(slot_rect, 3.0, egui::Stroke::new(1.0, border_color));
+                                                                sp.rect_stroke(slot_rect, 3.0, egui::Stroke::new(1.0_f32, border_color), egui::StrokeKind::Outside);
 
                                                                 // Icon fills the slot
                                                                 if let Some(tex) = icon_texture {
@@ -1757,7 +1757,7 @@ impl TbMonitorApp {
                         } else { bg };
                         let painter = ui.painter();
                         painter.rect_filled(rect, 4.0, card_bg);
-                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, border_color));
+                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border_color), egui::StrokeKind::Outside);
                         let label_color = if is_boss { BOSS_BLUE } else { TEXT_SECONDARY };
                         painter.text(
                             rect.center(),
@@ -1883,7 +1883,7 @@ impl TbMonitorApp {
                         // Background
                         painter.rect_filled(rect, 4.0, card_bg);
                         // Border
-                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, border_color));
+                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border_color), egui::StrokeKind::Outside);
 
                         // Icon — fills the entire card with tiny margin
                         if let Some(tex) = icon_texture {
